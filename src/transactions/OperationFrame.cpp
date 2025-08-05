@@ -25,6 +25,7 @@
 #include "transactions/ManageSellOfferOpFrame.h"
 #include "transactions/MergeOpFrame.h"
 #include "transactions/MutableTransactionResult.h"
+#include "transactions/PadForTestingOpFrame.h"
 #include "transactions/PathPaymentStrictReceiveOpFrame.h"
 #include "transactions/PathPaymentStrictSendOpFrame.h"
 #include "transactions/PaymentOpFrame.h"
@@ -123,6 +124,10 @@ OperationFrame::makeHelper(Operation const& op, TransactionFrame const& tx,
         return std::make_shared<ExtendFootprintTTLOpFrame>(op, tx);
     case RESTORE_FOOTPRINT:
         return std::make_shared<RestoreFootprintOpFrame>(op, tx);
+#ifdef BUILD_TESTS
+    case PAD_FOR_TESTING:
+        return std::make_shared<PadForTestingOpFrame>(op, tx);
+#endif
     default:
         ostringstream err;
         err << "Unknown Tx type: " << op.body.type();
