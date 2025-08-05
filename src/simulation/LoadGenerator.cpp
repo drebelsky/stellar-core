@@ -1167,9 +1167,8 @@ LoadGenerator::creationTransaction(uint64_t startAccount, uint64_t numItems,
         }
     }
     mInitialAccountsCreated = true;
-    return std::make_pair(sourceAcc,
-                          mTxGenerator.createTransactionFramePtr(
-                              sourceAcc, creationOps, std::nullopt));
+    return std::make_pair(sourceAcc, mTxGenerator.createTransactionFramePtr(
+                                         sourceAcc, creationOps, std::nullopt));
 }
 
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBaseConstPtr>

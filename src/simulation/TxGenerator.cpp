@@ -238,24 +238,30 @@ static void
 addPadding(vector<Operation>& ops, std::optional<uint8_t>& memoSize,
            uint32_t desiredSize, uint32_t currentSize)
 {
-    if (desiredSize <= currentSize) {
+    if (desiredSize <= currentSize)
+    {
         return;
     }
 
     // Adding a padding op with 0 padding adds 12 bytes to a transaction
     uint32_t constexpr paddingSize = 12;
 
-    if (desiredSize < currentSize + paddingSize) {
+    if (desiredSize < currentSize + paddingSize)
+    {
         // Adding a size-0 memo takes 4 bytes (for storing the size of the memo)
-        if (desiredSize - currentSize < 4) {
+        if (desiredSize - currentSize < 4)
+        {
             memoSize = 0;
-        } else {
+        }
+        else
+        {
             memoSize = desiredSize - currentSize - 4;
         }
         return;
     }
 
-    ops.emplace_back(txtest::padForTesting(desiredSize - paddingSize - currentSize));
+    ops.emplace_back(
+        txtest::padForTesting(desiredSize - paddingSize - currentSize));
 }
 
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBasePtr>
