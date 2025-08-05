@@ -1672,6 +1672,15 @@ liquidityPoolWithdraw(PoolID const& poolID, int64_t amount, int64_t minAmountA,
     return op;
 }
 
+Operation
+padForTesting(uint32_t bytes)
+{
+    Operation op;
+    op.body.type(PAD_FOR_TESTING);
+    op.body.padForTestingOp().padding = xdr::opaque_vec<>(bytes);
+    return op;
+}
+
 OperationResult const&
 getFirstResult(TransactionTestFramePtr tx)
 {

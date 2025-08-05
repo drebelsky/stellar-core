@@ -11,10 +11,13 @@
 #include "simulation/LoadGenerator.h"
 #include "simulation/Topologies.h"
 #include "test/Catch2.h"
+#include "test/TxTests.h"
 #include "test/test.h"
+#include "transactions/TransactionFrame.h"
 #include "transactions/test/SorobanTxTestUtils.h"
 #include "util/Math.h"
 #include "util/finally.h"
+#include "xdrpp/marshal.h"
 #include <fmt/format.h>
 
 using namespace stellar;
@@ -1075,4 +1078,47 @@ TEST_CASE("apply load", "[loadgen][applyload]")
               al.getReadEntryUtilization().mean() / 1000.0);
     CLOG_INFO(Perf, "Write entry utilization {}%",
               al.getWriteEntryUtilization().mean() / 1000.0);
+}
+
+TEST_CASE("confirm minimum tx sizes", "[loadgen]")
+{
+    // If this test fails, the byte size values in
+    // TxGenerator::paymentTransaction and TxGenerator::pretendTransaction need
+    // to be updated, and TxGenerator.cpp:addPadding
+    Config cfg(getTestConfig());
+    cfg.LEDGER_PROTOCOL_VERSION = Config::CURRENT_LEDGER_PROTOCOL_VERSION;
+    cfg.TESTING_UPGRADE_LEDGER_PROTOCOL_VERSION =
+        Config::CURRENT_LEDGER_PROTOCOL_VERSION;
+    VirtualClock clock;
+    Application::pointer app = createTestApplication(clock, cfg);
+    auto root = app->getRoot();
+    auto source =
+        root->create("", app->getLedgerManager().getLastMinBalance(0));
+    std::vector<Operation> ops;
+    ops.push_back(txtest::payment(source.getPublicKey(), 1));
+    auto tx = txtest::transactionFromOperationsV1(*app, source.getSecretKey(),
+                                                  1, ops, 0);
+    REQUIRE(xdr::xdr_argpack_size(*tx->toStellarMessage()) == 204);
+
+    Memo memo(MEMO_TEXT);
+    memo.text() = "";
+    tx = txtest::transactionFromOperationsV1(*app, source.getSecretKey(), 1,
+                                             ops, 0, std::nullopt, std::nullopt,
+                                             memo);
+    REQUIRE(xdr::xdr_argpack_size(*tx->toStellarMessage()) == 208);
+
+    ops.push_back(txtest::padForTesting(0));
+    tx = txtest::transactionFromOperationsV1(*app, source.getSecretKey(), 1,
+                                             ops, 0);
+    REQUIRE(xdr::xdr_argpack_size(*tx->toStellarMessage()) == 216);
+
+    ops.clear();
+    tx = txtest::transactionFromOperationsV1(*app, source.getSecretKey(), 1,
+                                             ops, 0);
+    REQUIRE(xdr::xdr_argpack_size(*tx->toStellarMessage()) == 148);
+
+    ops.push_back(txtest::padForTesting(0));
+    tx = txtest::transactionFromOperationsV1(*app, source.getSecretKey(), 1,
+                                             ops, 0);
+    REQUIRE(xdr::xdr_argpack_size(*tx->toStellarMessage()) == 160);
 }

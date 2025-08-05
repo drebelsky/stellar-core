@@ -291,6 +291,8 @@ Operation liquidityPoolDeposit(PoolID const& poolID, int64_t maxAmountA,
 Operation liquidityPoolWithdraw(PoolID const& poolID, int64_t amount,
                                 int64_t minAmountA, int64_t minAmountB);
 
+Operation padForTesting(uint32_t bytes);
+
 Asset makeNativeAsset();
 Asset makeInvalidAsset();
 Asset makeAsset(SecretKey const& issuer, std::string const& code);

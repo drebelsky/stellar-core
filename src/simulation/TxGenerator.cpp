@@ -200,32 +200,54 @@ TxGenerator::createAccounts(uint64_t start, uint64_t count, uint32_t ledgerNum,
 
 TransactionFrameBasePtr
 TxGenerator::createTransactionFramePtr(
-    TxGenerator::TestAccountPtr from, std::vector<Operation> ops, bool pretend,
-    std::optional<uint32_t> maxGeneratedFeeRate)
+    TxGenerator::TestAccountPtr from, std::vector<Operation> ops,
+    std::optional<uint32_t> maxGeneratedFeeRate,
+    std::optional<uint8_t> memoSize)
 {
     auto txf = transactionFromOperations(
         mApp, from->getSecretKey(), from->nextSequenceNumber(), ops,
         generateFee(maxGeneratedFeeRate, ops.size()));
-    if (pretend)
+    if (memoSize.has_value())
     {
+        // TODO: what if more than 28?
+        assert(*memoSize <= 28);
         Memo memo(MEMO_TEXT);
-        memo.text() = std::string(28, ' ');
+        memo.text() = std::string(*memoSize, ' ');
         txbridge::setMemo(txf, memo);
+    }
+    return txf;
+}
 
-        txbridge::setMinTime(txf, 0);
-        txbridge::setMaxTime(txf, UINT64_MAX);
-
-        txbridge::getSignatures(txf).clear();
-        txf->addSignature(from->getSecretKey());
+// Given ops of currentSize bytes, conditionally modify memo or add padding
+// operation to get byteSize approximately equal to desiredSize
+static void
+addPadding(vector<Operation>& ops, std::optional<uint8_t>& memoSize,
+           uint32_t desiredSize, uint32_t currentSize)
+{
+    if (desiredSize <= currentSize) {
+        return;
     }
 
-    return txf;
+    // Adding a padding op with 0 padding adds 12 bytes to a transaction
+    uint32_t constexpr paddingSize = 12;
+
+    if (desiredSize < currentSize + paddingSize) {
+        // Adding a size-0 memo takes 4 bytes (for storing the size of the memo)
+        if (desiredSize - currentSize < 4) {
+            memoSize = 0;
+        } else {
+            memoSize = desiredSize - currentSize - 4;
+        }
+        return;
+    }
+
+    ops.emplace_back(txtest::padForTesting(desiredSize - paddingSize - currentSize));
 }
 
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBasePtr>
 TxGenerator::paymentTransaction(uint32_t numAccounts, uint32_t offset,
                                 uint32_t ledgerNum, uint64_t sourceAccount,
-                                uint32_t opCount,
+                                uint32_t bytes,
                                 std::optional<uint32_t> maxGeneratedFeeRate)
 {
     TxGenerator::TestAccountPtr to, from;
@@ -233,15 +255,16 @@ TxGenerator::paymentTransaction(uint32_t numAccounts, uint32_t offset,
     std::tie(from, to) =
         pickAccountPair(numAccounts, offset, ledgerNum, sourceAccount);
     vector<Operation> paymentOps;
-    paymentOps.reserve(opCount);
-    for (uint32_t i = 0; i < opCount; ++i)
-    {
-        paymentOps.emplace_back(txtest::payment(to->getPublicKey(), amount));
-    }
+    paymentOps.emplace_back(txtest::payment(to->getPublicKey(), amount));
 
-    return std::make_pair(from,
-                          createTransactionFramePtr(from, paymentOps, false,
-                                                    maxGeneratedFeeRate));
+    // smallest size in bytes of a transaction with just the payment
+    uint64_t constexpr basePaymentTxSize = 204;
+    std::optional<uint8_t> memoSize;
+    addPadding(paymentOps, memoSize, bytes, basePaymentTxSize);
+
+    return std::make_pair(from, createTransactionFramePtr(from, paymentOps,
+                                                          maxGeneratedFeeRate,
+                                                          memoSize));
 }
 
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBasePtr>
@@ -262,8 +285,7 @@ TxGenerator::manageOfferTransaction(uint32_t ledgerNum, uint64_t accountId,
             100));
     }
     return std::make_pair(
-        account,
-        createTransactionFramePtr(account, ops, false, maxGeneratedFeeRate));
+        account, createTransactionFramePtr(account, ops, maxGeneratedFeeRate));
 }
 
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBaseConstPtr>
@@ -1207,31 +1229,19 @@ TxGenerator::sorobanRandomUploadResources()
 std::pair<TxGenerator::TestAccountPtr, TransactionFrameBaseConstPtr>
 TxGenerator::pretendTransaction(uint32_t numAccounts, uint32_t offset,
                                 uint32_t ledgerNum, uint64_t sourceAccount,
-                                uint32_t opCount,
+                                uint32_t bytes,
                                 std::optional<uint32_t> maxGeneratedFeeRate)
 {
     vector<Operation> ops;
-    ops.reserve(opCount);
     auto acc = findAccount(sourceAccount, ledgerNum);
-    for (uint32 i = 0; i < opCount; i++)
-    {
-        auto args = SetOptionsArguments{};
 
-        // We make SetOptionsOps such that we end up
-        // with a n-op transaction that is exactly 100n + 240 bytes.
-        args.inflationDest = std::make_optional<AccountID>(acc->getPublicKey());
-        args.homeDomain = std::make_optional<std::string>(std::string(16, '*'));
-        if (i == 0)
-        {
-            // The first operation needs to be bigger to achieve
-            // 100n + 240 bytes.
-            args.homeDomain->append(std::string(8, '*'));
-            args.signer = std::make_optional<Signer>(Signer{});
-        }
-        ops.push_back(txtest::setOptions(args));
-    }
+    // base transaction size in bytes of a transaction with no operations [TODO: valid?]
+    uint64_t baseTxSize = 148;
+    std::optional<uint8_t> memoSize;
+    addPadding(ops, memoSize, bytes, baseTxSize);
+
     return std::make_pair(
-        acc, createTransactionFramePtr(acc, ops, true, maxGeneratedFeeRate));
+        acc, createTransactionFramePtr(acc, ops, maxGeneratedFeeRate));
 }
 
 }
