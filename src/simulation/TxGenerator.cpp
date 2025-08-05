@@ -1284,7 +1284,7 @@ TxGenerator::pretendTransaction(uint32_t numAccounts, uint32_t offset,
     vector<Operation> ops;
     auto acc = findAccount(sourceAccount, ledgerNum);
 
-    // base transaction size in bytes of a transaction with no operations [TODO: valid?]
+    // base transaction size in bytes of a transaction with no operations
     uint64_t baseTxSize = 148;
     std::optional<uint8_t> memoSize;
     addPadding(ops, memoSize, bytes, baseTxSize);
