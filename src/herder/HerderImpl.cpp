@@ -87,6 +87,9 @@ HerderImpl::HerderImpl(Application& app)
     : mTransactionQueue(app, TRANSACTION_QUEUE_TIMEOUT_LEDGERS,
                         TRANSACTION_QUEUE_BAN_LEDGERS,
                         app.getConfig().TRANSACTION_QUEUE_SIZE_MULTIPLIER)
+    , mSorobanTransactionQueue(
+          app, TRANSACTION_QUEUE_TIMEOUT_LEDGERS, TRANSACTION_QUEUE_BAN_LEDGERS,
+          app.getConfig().SOROBAN_TRANSACTION_QUEUE_SIZE_MULTIPLIER)
     , mPendingEnvelopes(app, *this)
     , mHerderSCPDriver(app, *this, mUpgrades, mPendingEnvelopes)
     , mLastSlotSaved(0)
@@ -271,10 +274,7 @@ HerderImpl::shutdown()
     mOutOfSyncTimer.cancel();
     mTriggerTimer.cancel();
     mTransactionQueue.shutdown();
-    if (mSorobanTransactionQueue)
-    {
-        mSorobanTransactionQueue->shutdown();
-    }
+    mSorobanTransactionQueue.shutdown();
 
     mTxSetGarbageCollectTimer.cancel();
 }
@@ -608,8 +608,7 @@ HerderImpl::recvTransaction(TransactionFrameBasePtr tx, bool submittedFromSelf
     // Allow txs of the same kind to reach the tx queue in case it can be
     // replaced by fee
     bool hasSoroban =
-        mSorobanTransactionQueue &&
-        mSorobanTransactionQueue->sourceAccountPending(tx->getSourceID()) &&
+        mSorobanTransactionQueue.sourceAccountPending(tx->getSourceID()) &&
         !tx->isSoroban();
     bool hasClassic =
         mTransactionQueue.sourceAccountPending(tx->getSourceID()) &&
@@ -633,12 +632,15 @@ HerderImpl::recvTransaction(TransactionFrameBasePtr tx, bool submittedFromSelf
 #endif
         );
     }
-    else if (mSorobanTransactionQueue)
+    else if (protocolVersionStartsFrom(mApp.getLedgerManager()
+                                           .getLastClosedLedgerHeader()
+                                           .header.ledgerVersion,
+                                       SOROBAN_PROTOCOL_VERSION))
     {
-        result = mSorobanTransactionQueue->tryAdd(tx, submittedFromSelf
+        result = mSorobanTransactionQueue.tryAdd(tx, submittedFromSelf
 #ifdef BUILD_TESTS
-                                                  ,
-                                                  isLoadgenTx
+                                                 ,
+                                                 isLoadgenTx
 #endif
         );
     }
@@ -943,11 +945,8 @@ bool
 HerderImpl::sourceAccountPending(AccountID const& accountID) const
 {
     bool accPending = mTransactionQueue.sourceAccountPending(accountID);
-    if (mSorobanTransactionQueue)
-    {
-        accPending = accPending ||
-                     mSorobanTransactionQueue->sourceAccountPending(accountID);
-    }
+    accPending =
+        accPending || mSorobanTransactionQueue.sourceAccountPending(accountID);
     return accPending;
 }
 
@@ -1116,8 +1115,7 @@ HerderImpl::getTransactionQueue()
 SorobanTransactionQueue&
 HerderImpl::getSorobanTransactionQueue()
 {
-    releaseAssert(mSorobanTransactionQueue);
-    return *mSorobanTransactionQueue;
+    return mSorobanTransactionQueue;
 }
 #endif
 
@@ -1168,9 +1166,6 @@ HerderImpl::lastClosedLedgerIncreased(bool latest, TxSetXDRFrameConstPtr txSet,
                                       bool upgradeApplied)
 {
     releaseAssert(threadIsMain());
-
-    maybeSetupSorobanQueue(
-        mLedgerManager.getLastClosedLedgerHeader().header.ledgerVersion);
 
     // Ensure potential upgrades are handled in overlay
     maybeHandleUpgrade();
@@ -1418,9 +1413,8 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     if (protocolVersionStartsFrom(lcl.header.ledgerVersion,
                                   SOROBAN_PROTOCOL_VERSION))
     {
-        releaseAssert(mSorobanTransactionQueue);
         txPhases.emplace_back(
-            mSorobanTransactionQueue->getTransactions(lcl.header));
+            mSorobanTransactionQueue.getTransactions(lcl.header));
     }
 
     // We pick as next close time the current time unless it's before the last
@@ -1492,8 +1486,7 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     if (protocolVersionStartsFrom(lcl.header.ledgerVersion,
                                   SOROBAN_PROTOCOL_VERSION))
     {
-        releaseAssert(mSorobanTransactionQueue);
-        mSorobanTransactionQueue->ban(
+        mSorobanTransactionQueue.ban(
             invalidTxPhases[static_cast<size_t>(TxSetPhase::SOROBAN)]);
     }
 
@@ -2258,27 +2251,6 @@ HerderImpl::maybeHandleUpgrade()
 }
 
 void
-HerderImpl::maybeSetupSorobanQueue(uint32_t protocolVersion)
-{
-    if (protocolVersionStartsFrom(protocolVersion, SOROBAN_PROTOCOL_VERSION))
-    {
-        if (!mSorobanTransactionQueue)
-        {
-            mSorobanTransactionQueue =
-                std::make_unique<SorobanTransactionQueue>(
-                    mApp, TRANSACTION_QUEUE_TIMEOUT_LEDGERS,
-                    TRANSACTION_QUEUE_BAN_LEDGERS,
-                    mApp.getConfig().SOROBAN_TRANSACTION_QUEUE_SIZE_MULTIPLIER);
-        }
-    }
-    else if (mSorobanTransactionQueue)
-    {
-        throw std::runtime_error(
-            "Invalid state: Soroban queue initialized before v20");
-    }
-}
-
-void
 HerderImpl::start()
 {
     mMaxTxSize = mApp.getHerder().getMaxClassicTxSize();
@@ -2293,8 +2265,6 @@ HerderImpl::start()
             mMaxTxSize = std::max(mMaxTxSize, conf.txMaxSizeBytes() +
                                                   getFlowControlExtraBuffer());
         }
-
-        maybeSetupSorobanQueue(version);
     }
 
     auto const& cfg = mApp.getConfig();
@@ -2432,7 +2402,7 @@ HerderImpl::updateTransactionQueue(TxSetXDRFrameConstPtr externalizedTxSet,
 
         if (isSoroban && queueRebuildNeeded)
         {
-            mSorobanTransactionQueue->resetAndRebuild();
+            mSorobanTransactionQueue.resetAndRebuild();
         }
 
         auto txs = queue.getTransactions(lhhe.header);
@@ -2454,10 +2424,11 @@ HerderImpl::updateTransactionQueue(TxSetXDRFrameConstPtr externalizedTxSet,
     // Even if we're in protocol 20, still check for number of phases, in case
     // we're dealing with the upgrade ledger that contains old-style transaction
     // set
-    if (mSorobanTransactionQueue != nullptr &&
+    if (protocolVersionStartsFrom(lhhe.header.ledgerVersion,
+                                  SOROBAN_PROTOCOL_VERSION) &&
         txsPerPhase.size() > static_cast<size_t>(TxSetPhase::SOROBAN))
     {
-        updateQueue(*mSorobanTransactionQueue,
+        updateQueue(mSorobanTransactionQueue,
                     txsPerPhase[static_cast<size_t>(TxSetPhase::SOROBAN)],
                     true);
     }
@@ -2582,19 +2553,14 @@ HerderImpl::getMaxQueueSizeOps() const
 size_t
 HerderImpl::getMaxQueueSizeSorobanOps() const
 {
-    return mSorobanTransactionQueue
-               ? mSorobanTransactionQueue->getMaxQueueSizeOps()
-               : 0;
+    return mSorobanTransactionQueue.getMaxQueueSizeOps();
 }
 
 bool
 HerderImpl::isBannedTx(Hash const& hash) const
 {
     auto banned = mTransactionQueue.isBanned(hash);
-    if (mSorobanTransactionQueue)
-    {
-        banned = banned || mSorobanTransactionQueue->isBanned(hash);
-    }
+    banned = banned || mSorobanTransactionQueue.isBanned(hash);
     return banned;
 }
 
@@ -2602,9 +2568,9 @@ TransactionFrameBaseConstPtr
 HerderImpl::getTx(Hash const& hash) const
 {
     auto classic = mTransactionQueue.getTx(hash);
-    if (!classic && mSorobanTransactionQueue)
+    if (!classic)
     {
-        return mSorobanTransactionQueue->getTx(hash);
+        return mSorobanTransactionQueue.getTx(hash);
     }
     return classic;
 }
