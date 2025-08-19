@@ -1705,11 +1705,12 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
     // should not race with main, since publish on main begins strictly _after_
     // this call. There is a bug in the upgrade path where the initial
     // ledgerVers is used in some places during ledgerClose, and the upgraded
-    // ledgerVers is used in other places (see comment in ledgerClosed).
-    // On the ledger when an upgrade occurs, the ledger header will contain the
-    // newly incremented ledgerVers. Because the history checkpoint must be
-    // consistent with the ledger header, we must base checkpoints off the new
-    // ledgerVers here and not the initial ledgerVers.
+    // ledgerVers is used in other places (see comment in
+    // sealLedgerTxnAndStoreInBucketsAndDB). On the ledger when an upgrade
+    // occurs, the ledger header will contain the newly incremented ledgerVers.
+    // Because the history checkpoint must be consistent with the ledger header,
+    // we must base checkpoints off the new ledgerVers here and not the initial
+    // ledgerVers.
     auto& hm = mApp.getHistoryManager();
     hm.maybeQueueHistoryCheckpoint(ledgerSeq, maybeNewVersion);
 

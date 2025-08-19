@@ -198,7 +198,7 @@ LedgerManagerForBucketTests::sealLedgerTxnAndTransferEntriesToBucketList(
         std::vector<LedgerKey> dead;
 
         // Any V20 features must be behind initialLedgerVers check, see comment
-        // in LedgerManagerImpl::ledgerClosed
+        // in LedgerManagerImpl::sealLedgerTxnAndStoreInBucketsAndDB
         if (protocolVersionStartsFrom(initialLedgerVers,
                                       SOROBAN_PROTOCOL_VERSION))
         {
