@@ -161,6 +161,13 @@ InMemoryIndex::getRangeForType(LedgerEntryType type) const
     return std::nullopt;
 }
 
+std::vector<std::streamoff>
+InMemoryIndex::splitRange(std::streamoff start, std::streamoff end,
+                          size_t buckets) const
+{
+    return {start};
+}
+
 #ifdef BUILD_TESTS
 bool
 InMemoryIndex::operator==(InMemoryIndex const& in) const

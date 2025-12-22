@@ -480,9 +480,171 @@ InMemorySorobanState::initializeStateFromSnapshot(
             return Loop::INCOMPLETE;
         };
 
-        snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
-        snap->scanForEntriesOfType(TTL, ttlHandler);
-        snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+        struct Timer
+        {
+            std::chrono::steady_clock::time_point start;
+            char const* const t;
+            Timer(const char* t) : start{std::chrono::steady_clock::now()}, t{t}
+            {
+            }
+            ~Timer()
+            {
+                auto ms = (std::chrono::steady_clock::now() - start) /
+                          std::chrono::milliseconds{1};
+                CLOG_FATAL(Ledger, "GREP {} {} ms", t, ms);
+            }
+        };
+
+        deletedKeys.reserve(8'000'000);
+        {
+            Timer t{"CONTRACT_DATA cur"};
+            snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
+        }
+        deletedKeys.clear();
+        std::unordered_set<InternalContractDataMapEntry,
+                           InternalContractDataEntryHash>
+            dataEntries2;
+        {
+            Timer t{"CONTRACT_DATA tmp"};
+            snap->scanForEntriesOfType(
+                CONTRACT_DATA,
+                [&dataEntries2, &deletedKeys](BucketEntry const& be) {
+                    ZoneScopedN("loadSerialMock()");
+                    if (be.type() == DEADENTRY)
+                    {
+                        deletedKeys.emplace(be.deadEntry());
+                        return Loop::INCOMPLETE;
+                    }
+                    if (deletedKeys.find(LedgerEntryKey(be.liveEntry())) !=
+                        deletedKeys.end())
+                    {
+                        return Loop::INCOMPLETE;
+                    }
+                    dataEntries2.emplace(InternalContractDataMapEntry(
+                        be.liveEntry(), TTLData{}));
+                    return Loop::INCOMPLETE;
+                });
+        }
+
+        CLOG_FATAL(Ledger, "GREP orig {}, cur {}, = {}",
+                   mContractDataEntries.size(), dataEntries2.size(),
+                   mContractDataEntries == dataEntries2);
+
+        deletedKeys.clear();
+        std::unordered_set<InternalContractDataMapEntry,
+                           InternalContractDataEntryHash>
+            dataEntries;
+
+        auto constexpr THREADS = 8;
+        std::vector<std::vector<LedgerEntry>> bucketEntries;
+        std::vector<std::vector<LedgerKey>> deletedEntries;
+        std::vector<std::function<void(const BucketEntry&)>> callbacks;
+        deletedKeys.clear();
+        dataEntries.clear();
+        bucketEntries.resize(THREADS);
+        deletedEntries.resize(THREADS);
+        // dataEntries.reserve(964899);
+        for (int i = 0; i < THREADS; i++)
+        {
+            callbacks.emplace_back([&entries(bucketEntries[i]),
+                                    &deleted(deletedEntries[i]),
+                                    &deletedKeys](const BucketEntry& be) {
+                ZoneScopedN("loadParallelMock()");
+                if (be.type() == DEADENTRY)
+                {
+                    deleted.emplace_back(be.deadEntry());
+                    return;
+                }
+                {
+                    if (deletedKeys.find(LedgerEntryKey(be.liveEntry())) !=
+                        deletedKeys.end())
+                    {
+                        return;
+                    }
+                }
+                LedgerEntry live = be.liveEntry();
+                entries.emplace_back(live);
+            });
+        }
+        {
+            Timer t{"CONTRACT_DATA par"};
+            snap->shardScanForEntriesOfType(
+                CONTRACT_DATA, callbacks,
+                [&bucketEntries, &deletedEntries, &deletedKeys, &dataEntries] {
+                    ZoneScopedN("joinCallbackMock()");
+                    // size_t num = 0;
+                    for (int i = 0; i < THREADS; i++)
+                    {
+                        // bool had = false;
+                        for (auto& ledger : bucketEntries[i])
+                        {
+                            // had = true;
+                            dataEntries.emplace(InternalContractDataMapEntry(
+                                std::move(ledger), TTLData{}));
+                        }
+                        bucketEntries[i].clear();
+                        for (auto& deleted : deletedEntries[i])
+                        {
+                            // had = true;
+                            deletedKeys.emplace(deleted);
+                        }
+                        deletedEntries[i].clear();
+                        // num += had;
+                    }
+                    // CLOG_FATAL(Ledger, "GREP had {} threads", num);
+                });
+        }
+        CLOG_FATAL(Ledger, "GREP orig {}, cur {}, = {}",
+                   mContractDataEntries.size(), dataEntries.size(),
+                   mContractDataEntries == dataEntries);
+#if 0
+        auto constexpr SHARDS = 8;
+        std::array<std::unordered_map<LedgerKey, BucketEntry>, SHARDS> bes;
+        for (auto& v : bes)
+        {
+            v.reserve(10'000'000);
+        }
+
+        auto cd = [&bes](BucketEntry const& be) {
+            /*
+            size_t const key = std::hash<LedgerKey>()(
+                (be.type() == DEADENTRY) ? be.deadEntry()
+                                         : LedgerEntryKey(be.liveEntry()));
+                                         */
+            auto key = (be.type() == DEADENTRY)
+                           ? be.deadEntry()
+                           : LedgerEntryKey(be.liveEntry());
+            bes[std::hash<LedgerKey>{}(key) % SHARDS].emplace(key, be);
+            return Loop::INCOMPLETE;
+        };
+        {
+            Timer t{"CONTRACT_DATA"};
+            snap->scanForEntriesOfType(CONTRACT_DATA, cd);
+        }
+        {
+            Timer t{"ERASE"};
+            for (auto& source : bes)
+            {
+                for (auto iter = source.begin(); iter != source.end();)
+                {
+                    auto cur = iter++;
+                    if (cur->second.type() == DEADENTRY)
+                    {
+                        source.erase(cur);
+                    }
+                }
+            }
+        }
+        {
+            Timer t{"merge"};
+            std::unordered_map<LedgerKey, BucketEntry> map;
+            for (auto& source : std::move(bes))
+            {
+                map.merge(std::move(source));
+            }
+            CLOG_FATAL(Ledger, "{}", map.size());
+        }
+#endif
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();

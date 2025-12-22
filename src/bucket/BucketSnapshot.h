@@ -89,6 +89,9 @@ class LiveBucketSnapshot : public BucketSnapshotBase<LiveBucket>
     Loop scanForEntriesOfType(
         LedgerEntryType type,
         std::function<Loop(BucketEntry const&)> callback) const;
+
+    void foo(LedgerEntryType type,
+             std::vector<std::function<void(BucketEntry const&)>> callbacks) const;
 };
 
 class HotArchiveBucketSnapshot : public BucketSnapshotBase<HotArchiveBucket>

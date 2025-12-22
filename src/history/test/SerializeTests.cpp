@@ -3,6 +3,8 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "history/HistoryArchive.h"
+#include "ledger/LedgerManager.h"
+#include "main/Application.h"
 #include "test/Catch2.h"
 #include "test/test.h"
 
@@ -40,4 +42,43 @@ TEST_CASE("Serialization round trip", "[history]")
             REQUIRE(hasString == hasLoad.toString());
         }
     }
+}
+
+TEST_CASE("tmp")
+{
+    REQUIRE(!chdir("/Users/daniel/sc-run/"));
+    VirtualClock clock;
+    Config cfg;
+    cfg.load("pubnet.cfg");
+    Application::pointer app = Application::create(clock, cfg, false);
+    auto& lm = app->getLedgerManager();
+    lm.loadLastKnownLedger();
+#if 0
+    auto snapshot = app->getBucketManager()
+                        .getBucketSnapshotManager()
+                        .copySearchableLiveBucketListSnapshot();
+    auto& snap = *snapshot;
+    auto x = snap.getSnapshot();
+    auto& levels = x.getLevels();
+    auto& level = levels[10];
+    auto& bucket = *level.curr.mBucket;
+    auto& index = *bucket.mIndex;
+    auto& memIndex = *index.mInMemoryIndex;
+    auto& disIndex = *index.mDiskIndex;
+    CLOG_FATAL(Ledger, "GREP {}", index.lookup);
+#endif
+}
+
+TEST_CASE("tmp2")
+{
+    REQUIRE(!chdir("/Users/daniel/sc-run/buckets"));
+    XDRInputFileStream fs;
+    fs.open(std::string{"bucket-"
+                        "d2eec36a3eb7bf2a517fe2593d7adbb747cce6722fa953b2ccaec7"
+                        "ef78f30d0e.xdr"});
+    BucketEntry be;
+    size_t total = 0;
+    while (fs.readOne(be))
+        total++;
+    CLOG_FATAL(Ledger, "GREP {}", total);
 }

@@ -376,6 +376,13 @@ LiveBucket::getRangeForType(LedgerEntryType type) const
     return getIndex().getRangeForType(type);
 }
 
+std::vector<std::streamoff>
+LiveBucket::splitRange(std::streamoff start, std::streamoff end,
+                       size_t buckets) const
+{
+    return getIndex().splitRange(start, end, buckets);
+}
+
 std::vector<BucketEntry>
 LiveBucket::convertToBucketEntry(bool useInit,
                                  std::vector<LedgerEntry> const& initEntries,

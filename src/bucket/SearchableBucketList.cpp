@@ -85,8 +85,24 @@ SearchableLiveBucketListSnapshot::scanForEntriesOfType(
 {
     ZoneScoped;
     releaseAssert(mSnapshot);
-    auto f = [type, &callback](auto const& b) {
+    auto f = [type, &callback](LiveBucketSnapshot const& b) {
         return b.scanForEntriesOfType(type, callback);
+    };
+    loopAllBuckets(f, *mSnapshot);
+}
+void
+SearchableLiveBucketListSnapshot::shardScanForEntriesOfType(
+    LedgerEntryType type,
+    std::vector<std::function<void(BucketEntry const&)>> shardCallbacks,
+    std::function<void()> joinCallback) const
+{
+    ZoneScoped;
+    releaseAssert(mSnapshot);
+    auto f = [type, &shardCallbacks,
+              &joinCallback](LiveBucketSnapshot const& b) {
+        b.foo(type, shardCallbacks);
+        joinCallback();
+        return Loop::INCOMPLETE;
     };
     loopAllBuckets(f, *mSnapshot);
 }
