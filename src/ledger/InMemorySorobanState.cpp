@@ -547,8 +547,8 @@ InMemorySorobanState::initializeStateFromSnapshot(
         for (int i = 0; i < THREADS; i++)
         {
             callbacks.emplace_back([&entries(bucketEntries[i]),
-                                    &deleted(deletedEntries[i]), &deletedKeys,
-                                    &dataEntries](const BucketEntry& be) {
+                                    &deleted(deletedEntries[i]),
+                                    &deletedKeys](const BucketEntry& be) {
                 ZoneScopedN("loadParallelMock()");
                 if (be.type() == DEADENTRY)
                 {
@@ -562,15 +562,8 @@ InMemorySorobanState::initializeStateFromSnapshot(
                         return;
                     }
                 }
-
-                if (auto it = dataEntries.find(InternalContractDataMapEntry(
-                        LedgerEntryKey(be.liveEntry())));
-                    it == dataEntries.end())
-                {
-
-                    LedgerEntry live = be.liveEntry();
-                    entries.emplace_back(live);
-                }
+                LedgerEntry live = be.liveEntry();
+                entries.emplace_back(live);
             });
         }
         {
@@ -586,14 +579,14 @@ InMemorySorobanState::initializeStateFromSnapshot(
                         for (auto& ledger : bucketEntries[i])
                         {
                             // had = true;
-                            dataEntries.insert(InternalContractDataMapEntry(
+                            dataEntries.emplace(InternalContractDataMapEntry(
                                 std::move(ledger), TTLData{}));
                         }
                         bucketEntries[i].clear();
                         for (auto& deleted : deletedEntries[i])
                         {
                             // had = true;
-                            deletedKeys.insert(deleted);
+                            deletedKeys.emplace(deleted);
                         }
                         deletedEntries[i].clear();
                         // num += had;
