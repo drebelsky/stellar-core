@@ -496,6 +496,7 @@ InMemorySorobanState::initializeStateFromSnapshot(
         };
 
         deletedKeys.reserve(8'000'000);
+        mContractDataEntries.reserve(964899);
         {
             Timer t{"CONTRACT_DATA cur"};
             snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
@@ -504,6 +505,7 @@ InMemorySorobanState::initializeStateFromSnapshot(
         std::unordered_set<InternalContractDataMapEntry,
                            InternalContractDataEntryHash>
             dataEntries2;
+        dataEntries2.reserve(964899);
         {
             Timer t{"CONTRACT_DATA tmp"};
             snap->scanForEntriesOfType(
@@ -543,9 +545,11 @@ InMemorySorobanState::initializeStateFromSnapshot(
         dataEntries.clear();
         bucketEntries.resize(THREADS);
         deletedEntries.resize(THREADS);
-        // dataEntries.reserve(964899);
+        dataEntries.reserve(964899);
         for (int i = 0; i < THREADS; i++)
         {
+            bucketEntries[i].reserve(2'000'000);
+            deletedEntries[i].reserve(2'000'000);
             callbacks.emplace_back([&entries(bucketEntries[i]),
                                     &deleted(deletedEntries[i]),
                                     &deletedKeys](const BucketEntry& be) {
