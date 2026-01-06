@@ -119,6 +119,12 @@ class SearchableBucketListSnapshotBase : public NonMovableOrCopyable
     void loopAllBuckets(std::function<Loop(BucketSnapshotT const&)> f,
                         BucketListSnapshot<BucketT> const& snapshot) const;
 
+    // Loops through all buckets in the opposite order of loopAllBuckets. Calls
+    // f on each bucket. Exits early if function returns Loop::COMPLETE.
+    void
+    loopAllBucketsReverse(std::function<Loop(BucketSnapshotT const&)> f,
+                          BucketListSnapshot<BucketT> const& snapshot) const;
+
     // Overload that uses the internal snapshot
     void
     loopAllBuckets(std::function<Loop(BucketSnapshotT const&)> f) const

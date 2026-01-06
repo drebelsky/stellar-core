@@ -403,6 +403,162 @@ LiveBucketSnapshot::scanForEntriesOfType(
     return Loop::INCOMPLETE;
 }
 
+BucketEntryIter
+LiveBucketSnapshot::getIterForType(LedgerEntryType type) const
+{
+    if (isEmpty())
+    {
+        return BucketEntryIter{};
+    }
+
+    auto range = mBucket->getRangeForType(type);
+    if (!range)
+    {
+        return BucketEntryIter{};
+    }
+
+    return BucketEntryIter{mBucket->getFilename(), range->first, type};
+}
+
+bool
+BucketEntryIter::next(BucketEntry& be)
+{
+    ZoneScopedN("BucketEntryIter::next()");
+    if (mDone)
+    {
+        return false;
+    }
+
+    while (mStream.readOne(be))
+    {
+        if (!isBucketMetaEntry<LiveBucket>(be))
+        {
+            if (LedgerKey key = getBucketLedgerKey(be); key.type() > mType)
+            {
+                break;
+            }
+        }
+
+        bool matchesType = false;
+        if (be.type() == LIVEENTRY || be.type() == INITENTRY)
+        {
+            matchesType = be.liveEntry().data.type() == mType;
+        }
+        else if (be.type() == DEADENTRY)
+        {
+            matchesType = be.deadEntry().type() == mType;
+        }
+
+        if (matchesType)
+        {
+            return true;
+        }
+    }
+
+    mDone = true;
+    return false;
+}
+
+void
+LiveBucketSnapshot::parallelScanForEntriesOfType(
+    LedgerEntryType type,
+    std::vector<std::function<void(BucketEntry const&)>> callbacks) const
+{
+    if (isEmpty())
+    {
+        return;
+    }
+
+    auto range = mBucket->getRangeForType(type);
+    if (!range)
+    {
+        return;
+    }
+
+    auto starts =
+        mBucket->splitRange(range->first, range->second, callbacks.size());
+    releaseAssert(starts.size() >= 1 && starts.size() <= callbacks.size());
+    std::vector<std::thread> threads;
+    std::string filename = mBucket->getFilename().string();
+    for (size_t i = 0; i + 1 < starts.size(); i++)
+    {
+        threads.emplace_back([start(starts[i]), end(starts[i + 1]), filename,
+                              &callback(callbacks[i]), type] {
+            auto stream = XDRInputFileStream();
+            stream.open(filename);
+            stream.seek(end);
+            BucketEntry beLast;
+            releaseAssert(stream.readOne(beLast));
+            stream.seek(start);
+            BucketEntry be;
+            while (stream.readOne(be))
+            {
+                if (!isBucketMetaEntry<LiveBucket>(be))
+                {
+                    if (LedgerKey key = getBucketLedgerKey(be);
+                        key.type() > type || be == beLast)
+                    {
+                        break;
+                    }
+                }
+
+                bool matchesType = false;
+                if (be.type() == LIVEENTRY || be.type() == INITENTRY)
+                {
+                    matchesType = be.liveEntry().data.type() == type;
+                }
+                else if (be.type() == DEADENTRY)
+                {
+                    matchesType = be.deadEntry().type() == type;
+                }
+
+                if (matchesType)
+                {
+                    callback(be);
+                }
+            }
+            return;
+        });
+    }
+    threads.emplace_back([start(starts[starts.size() - 1]), filename,
+                          &callback(callbacks[starts.size() - 1]), type] {
+        auto stream = XDRInputFileStream();
+        stream.open(filename);
+        stream.seek(start);
+        BucketEntry be;
+        while (stream.readOne(be))
+        {
+            if (!isBucketMetaEntry<LiveBucket>(be))
+            {
+                if (LedgerKey key = getBucketLedgerKey(be); key.type() > type)
+                {
+                    break;
+                }
+            }
+
+            bool matchesType = false;
+            if (be.type() == LIVEENTRY || be.type() == INITENTRY)
+            {
+                matchesType = be.liveEntry().data.type() == type;
+            }
+            else if (be.type() == DEADENTRY)
+            {
+                matchesType = be.deadEntry().type() == type;
+            }
+
+            if (matchesType)
+            {
+                callback(be);
+            }
+        }
+        return;
+    });
+    for (size_t i = 0; i < threads.size(); i++)
+    {
+        threads[i].join();
+    }
+}
+
 template <class BucketT>
 XDRInputFileStream&
 BucketSnapshotBase<BucketT>::getStream() const

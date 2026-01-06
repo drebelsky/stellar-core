@@ -3,6 +3,8 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "history/HistoryArchive.h"
+#include "ledger/LedgerManager.h"
+#include "main/Application.h"
 #include "test/Catch2.h"
 #include "test/test.h"
 
@@ -40,4 +42,15 @@ TEST_CASE("Serialization round trip", "[history]")
             REQUIRE(hasString == hasLoad.toString());
         }
     }
+}
+
+TEST_CASE("tmp")
+{
+    REQUIRE(!chdir("/Users/daniel/sc-run/"));
+    VirtualClock clock;
+    Config cfg;
+    cfg.load("pubnet.cfg");
+    Application::pointer app = Application::create(clock, cfg, false);
+    auto& lm = app->getLedgerManager();
+    lm.loadLastKnownLedger();
 }

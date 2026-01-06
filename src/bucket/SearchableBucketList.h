@@ -38,6 +38,19 @@ class SearchableLiveBucketListSnapshot
         LedgerEntryType type,
         std::function<Loop(BucketEntry const&)> callback) const;
 
+    void scanForEntriesOfTypeReverse(
+        LedgerEntryType type,
+        std::function<Loop(BucketEntry const&)> callback) const;
+
+    void
+    getEntriesOfType(LedgerEntryType type,
+                     std::function<void(BucketEntry const&)> callback) const;
+
+    void parallelScanForEntriesOfType(
+        LedgerEntryType type,
+        std::vector<std::function<void(BucketEntry const&)>> shardCallbacks,
+        std::function<void()> joinCallback) const;
+
     friend SearchableSnapshotConstPtr
     BucketSnapshotManager::copySearchableLiveBucketListSnapshot(
         SharedLockShared const& guard) const;

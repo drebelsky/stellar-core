@@ -7,6 +7,7 @@
 #include "ledger/LedgerTypeUtils.h"
 #include "ledger/SorobanMetrics.h"
 #include "util/GlobalChecks.h"
+#include "util/settings.h"
 #include <cstdint>
 
 namespace stellar
@@ -403,6 +404,102 @@ InMemorySorobanState::getTTL(LedgerKey const& ledgerKey) const
     return nullptr;
 }
 
+namespace
+{
+
+struct Hash
+{
+    size_t
+    operator()(LedgerEntry const& le) const
+    {
+        using namespace PopulateOptions;
+        if constexpr (type == DataEntriesType::LEDGER_ENTRY_LK_HASH)
+        {
+            return std::hash<LedgerKey>()(LedgerEntryKey(le));
+        }
+        else if constexpr (type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH)
+        {
+            return stellar::shortHash::computeHash(xdr::xdr_to_opaque(le));
+        }
+        else if constexpr (type ==
+                           DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+        {
+            return stellar::shortHash::xdrComputeHash(le);
+        }
+        return 0;
+    }
+};
+
+struct OpaqueHash
+{
+    size_t
+    operator()(xdr::opaque_vec<> const& le) const
+    {
+        using namespace PopulateOptions;
+        if constexpr (type == DataEntriesType::OPAQUE_VEC_XDR_HASH)
+        {
+            return stellar::shortHash::computeHash(le);
+        }
+        return stellar::shortHash::computeHash(le);
+    }
+};
+
+auto
+setType()
+{
+    using namespace PopulateOptions;
+    if constexpr (type == DataEntriesType::DEFAULT)
+    {
+        return std::unordered_set<InternalContractDataMapEntry,
+                                  InternalContractDataEntryHash>();
+    }
+    else if constexpr (type == DataEntriesType::LEDGER_ENTRY_LK_HASH ||
+                       type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
+                       type == DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+    {
+        return std::unordered_set<LedgerEntry, Hash>();
+    }
+    else if constexpr (type == DataEntriesType::OPAQUE_VEC ||
+                       type == DataEntriesType::OPAQUE_VEC_XDR_HASH)
+    {
+        return std::unordered_set<xdr::opaque_vec<>, OpaqueHash>();
+    }
+}
+
+// Utility classes
+struct Timer
+{
+    std::chrono::steady_clock::time_point start;
+    char const* const t;
+    Timer(const char* t) : start{std::chrono::steady_clock::now()}, t{t}
+    {
+    }
+    ~Timer()
+    {
+        auto ms = (std::chrono::steady_clock::now() - start) /
+                  std::chrono::nanoseconds{1};
+        CLOG_FATAL(Ledger, "GREP {} {} ns", t, ms);
+    }
+};
+
+// Utility functions
+// We wrap erase in a dependent scope so that it doesn't cause a compiler error
+// on untake `if constexpr` branches
+template <typename T, typename U>
+inline void
+erase [[gnu::always_inline]] (T&& map, U&& key)
+{
+    map.erase(key);
+}
+
+// Config checking
+static_assert((PopulateOptions::options & 0b111) == PopulateOptions::options);
+static_assert(PopulateOptions::mode !=
+                  PopulateOptions::Mode::ITERATE_BACKWARDS ||
+              PopulateOptions::type ==
+                  PopulateOptions::DataEntriesType::DEFAULT);
+} // namespace
+
 void
 InMemorySorobanState::initializeStateFromSnapshot(
     SearchableSnapshotConstPtr snap, uint32_t ledgerVersion)
@@ -414,75 +511,200 @@ InMemorySorobanState::initializeStateFromSnapshot(
     if (protocolVersionStartsFrom(ledgerVersion, SOROBAN_PROTOCOL_VERSION))
     {
         auto sorobanConfig = SorobanNetworkConfig::loadFromLedger(snap);
-        // Check if entry is a DEADENTRY and add it to deletedKeys. Otherwise,
-        // check if the entry is shadowed by a DEADENTRY.
         std::unordered_set<LedgerKey> deletedKeys;
-        auto shouldAddToMap = [&deletedKeys](BucketEntry const& be,
-                                             LedgerEntryType expectedType) {
+        decltype(setType()) dataEntries;
+
+        if constexpr ((PopulateOptions::options &
+                       PopulateOptions::Options::PRESIZE) ==
+                      PopulateOptions::Options::PRESIZE)
+        {
+            dataEntries.reserve(10'000'000);
+            deletedKeys.reserve(10'000'000);
+        }
+
+        auto dataHandler = [&dataEntries, &deletedKeys](BucketEntry const& be) {
+            using namespace PopulateOptions;
+            ZoneScopedN("loadSerialMock()");
             if (be.type() == DEADENTRY)
             {
-                deletedKeys.insert(be.deadEntry());
-                return false;
-            }
-
-            releaseAssertOrThrow(be.type() == LIVEENTRY ||
-                                 be.type() == INITENTRY);
-            auto lk = LedgerEntryKey(be.liveEntry());
-            releaseAssertOrThrow(lk.type() == expectedType);
-            return deletedKeys.find(lk) == deletedKeys.end();
-        };
-
-        auto contractDataHandler = [this,
-                                    &shouldAddToMap](BucketEntry const& be) {
-            if (!shouldAddToMap(be, CONTRACT_DATA))
-            {
+                ZoneScopedN("loadSerialMock() deletedKeys.emplace()");
+                deletedKeys.emplace(be.deadEntry());
                 return Loop::INCOMPLETE;
             }
-
-            auto lk = LedgerEntryKey(be.liveEntry());
-            if (!get(lk))
             {
-                createContractDataEntry(be.liveEntry());
+                ZoneScopedN("loadSerialMock() lookup in deleted "
+                            "keys");
+                if (deletedKeys.find(LedgerEntryKey(be.liveEntry())) !=
+                    deletedKeys.end())
+                {
+                    return Loop::INCOMPLETE;
+                }
             }
-
+            {
+                ZoneScopedN("loadSerialMock() insert into data entries");
+                if constexpr (type == DataEntriesType::DEFAULT)
+                {
+                    dataEntries.emplace(InternalContractDataMapEntry(
+                        be.liveEntry(), TTLData{}));
+                }
+                else if constexpr (
+                    type == DataEntriesType::LEDGER_ENTRY_LK_HASH ||
+                    type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
+                    type == DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+                {
+                    dataEntries.emplace(be.liveEntry());
+                }
+                else if constexpr (type == DataEntriesType::OPAQUE_VEC ||
+                                   type == DataEntriesType::OPAQUE_VEC_XDR_HASH)
+                {
+                    dataEntries.emplace(xdr::xdr_to_opaque(be.liveEntry()));
+                }
+            }
             return Loop::INCOMPLETE;
         };
 
-        auto ttlHandler = [this, &shouldAddToMap](BucketEntry const& be) {
-            if (!shouldAddToMap(be, TTL))
+        auto dataHandlerBackwards = [&dataEntries](BucketEntry const& be) {
+            using namespace PopulateOptions;
+            ZoneScopedN("loadSerialMock()");
+            if constexpr (type == DataEntriesType::DEFAULT)
             {
-                return Loop::INCOMPLETE;
+                if (be.type() == DEADENTRY)
+                {
+                    auto lk = be.deadEntry();
+                    erase(dataEntries, InternalContractDataMapEntry{lk});
+                    return Loop::INCOMPLETE;
+                }
+                dataEntries.emplace(
+                    InternalContractDataMapEntry{be.liveEntry(), TTLData{}});
             }
-
-            auto lk = LedgerEntryKey(be.liveEntry());
-            if (!hasTTL(lk))
-            {
-                createTTL(be.liveEntry());
-            }
-
             return Loop::INCOMPLETE;
         };
 
-        auto contractCodeHandler = [this, &shouldAddToMap, &sorobanConfig,
-                                    ledgerVersion](BucketEntry const& be) {
-            if (!shouldAddToMap(be, CONTRACT_CODE))
+        std::optional<LedgerKey> currentKey;
+        auto dataHandlerMerge = [&dataEntries,
+                                 &currentKey](BucketEntry const& be) {
+            using namespace PopulateOptions;
+            ZoneScopedN("loadSerialMock()");
+            if (be.type() == DEADENTRY)
             {
-                return Loop::INCOMPLETE;
+                currentKey = be.deadEntry();
+                return;
             }
 
-            auto lk = LedgerEntryKey(be.liveEntry());
-            if (!get(lk))
+            LedgerKey lk = LedgerEntryKey(be.liveEntry());
+            if (currentKey.has_value() && *currentKey == lk)
             {
-                createContractCodeEntry(be.liveEntry(), sorobanConfig,
-                                        ledgerVersion);
+                return;
             }
+            currentKey = lk;
 
-            return Loop::INCOMPLETE;
+            if constexpr (type == DataEntriesType::DEFAULT)
+            {
+                dataEntries.emplace(
+                    InternalContractDataMapEntry{be.liveEntry(), TTLData{}});
+            }
+            else if constexpr (
+                type == DataEntriesType::LEDGER_ENTRY_LK_HASH ||
+                type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
+                type == DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+            {
+                dataEntries.emplace(be.liveEntry());
+            }
+            else if constexpr (type == DataEntriesType::OPAQUE_VEC ||
+                               type == DataEntriesType::OPAQUE_VEC_XDR_HASH)
+            {
+                dataEntries.emplace(xdr::xdr_to_opaque(be.liveEntry()));
+            }
         };
 
-        snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
-        snap->scanForEntriesOfType(TTL, ttlHandler);
-        snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+        auto constexpr THREADS = 8;
+        std::vector<std::vector<LedgerEntry>> bucketEntries;
+        std::vector<std::vector<LedgerKey>> deletedEntries;
+        std::vector<std::function<void(const BucketEntry&)>> callbacks;
+        bucketEntries.resize(THREADS);
+        deletedEntries.resize(THREADS);
+        for (int i = 0; i < THREADS; i++)
+        {
+            callbacks.emplace_back([&entries(bucketEntries[i]),
+                                    &deleted(deletedEntries[i]),
+                                    &deletedKeys](const BucketEntry& be) {
+                ZoneScopedN("loadParallelMock()");
+                if (be.type() == DEADENTRY)
+                {
+                    deleted.emplace_back(be.deadEntry());
+                    return;
+                }
+                if (deletedKeys.find(LedgerEntryKey(be.liveEntry())) !=
+                    deletedKeys.end())
+                {
+                    return;
+                }
+                LedgerEntry live = be.liveEntry();
+                entries.emplace_back(live);
+            });
+        }
+        auto parallelJoin = [&bucketEntries, &deletedEntries, &deletedKeys,
+                             &dataEntries] {
+            ZoneScopedN("joinCallbackMock()");
+            for (int i = 0; i < THREADS; i++)
+            {
+                using namespace PopulateOptions;
+                for (auto& ledger : bucketEntries[i])
+                {
+
+                    if constexpr (type == DataEntriesType::DEFAULT)
+                    {
+                        dataEntries.emplace(
+                            InternalContractDataMapEntry{ledger, TTLData{}});
+                    }
+                    else if constexpr (
+                        type == DataEntriesType::LEDGER_ENTRY_LK_HASH ||
+                        type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
+                        type == DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+                    {
+                        dataEntries.emplace(ledger);
+                    }
+                    else if constexpr (type == DataEntriesType::OPAQUE_VEC ||
+                                       type ==
+                                           DataEntriesType::OPAQUE_VEC_XDR_HASH)
+                    {
+                        dataEntries.emplace(xdr::xdr_to_opaque(ledger));
+                    }
+                }
+                bucketEntries[i].clear();
+                for (auto& deleted : deletedEntries[i])
+                {
+                    deletedKeys.emplace(deleted);
+                }
+                deletedEntries[i].clear();
+            }
+        };
+
+        Timer t("load CONTRACT_DATA entries");
+        if constexpr (PopulateOptions::mode ==
+                      PopulateOptions::Mode::ITERATE_BACKWARDS)
+        {
+            snap->scanForEntriesOfTypeReverse(CONTRACT_DATA,
+                                              dataHandlerBackwards);
+        }
+        else if constexpr (PopulateOptions::mode ==
+                               PopulateOptions::Mode::N_WAY_MERGE ||
+                           PopulateOptions::mode ==
+                               PopulateOptions::Mode::
+                                   N_WAY_MERGE_BUCKET_ENTRY_ID_CMP)
+        {
+            snap->getEntriesOfType(CONTRACT_DATA, dataHandlerMerge);
+        }
+        else if constexpr (PopulateOptions::mode ==
+                           PopulateOptions::Mode::ITERATE_PARALLEL)
+        {
+            snap->parallelScanForEntriesOfType(CONTRACT_DATA, callbacks,
+                                               parallelJoin);
+        }
+        else
+        {
+            snap->scanForEntriesOfType(CONTRACT_DATA, dataHandler);
+        }
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();

@@ -234,6 +234,9 @@ class InMemoryIndex
     std::optional<std::pair<std::streamoff, std::streamoff>>
     getRangeForType(LedgerEntryType type) const;
 
+    std::vector<std::streamoff>
+    splitRange(std::streamoff start, std::streamoff end, size_t buckets) const;
+
 #ifdef BUILD_TESTS
     bool operator==(InMemoryIndex const& in) const;
 #endif

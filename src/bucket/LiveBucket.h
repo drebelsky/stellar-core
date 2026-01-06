@@ -113,6 +113,9 @@ class LiveBucket : public BucketBase<LiveBucket, LiveBucketIndex>,
     std::optional<std::pair<std::streamoff, std::streamoff>>
     getRangeForType(LedgerEntryType type) const;
 
+    std::vector<std::streamoff>
+    splitRange(std::streamoff start, std::streamoff end, size_t buckets) const;
+
     // Create a fresh bucket from given vectors of init (created) and live
     // (updated) LedgerEntries, and dead LedgerEntryKeys. The bucket will
     // be sorted, hashed, and adopted in the provided BucketManager.

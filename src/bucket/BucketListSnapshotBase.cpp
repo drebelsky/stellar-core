@@ -59,6 +59,33 @@ SearchableBucketListSnapshotBase<BucketT>::getLedgerHeader() const
 
 template <class BucketT>
 void
+SearchableBucketListSnapshotBase<BucketT>::loopAllBucketsReverse(
+    std::function<Loop(BucketSnapshotT const&)> f,
+    BucketListSnapshot<BucketT> const& snapshot) const
+{
+    auto const& levels = snapshot.getLevels();
+    for (size_t i = levels.size(); i > 0; i--)
+    {
+        auto const& lev = levels[i - 1];
+        auto processBucket = [f](BucketSnapshotT const& b) {
+            if (b.isEmpty())
+            {
+                return Loop::INCOMPLETE;
+            }
+
+            return f(b);
+        };
+
+        if (processBucket(lev.snap) == Loop::COMPLETE ||
+            processBucket(lev.curr) == Loop::COMPLETE)
+        {
+            return;
+        }
+    }
+}
+
+template <class BucketT>
+void
 SearchableBucketListSnapshotBase<BucketT>::loopAllBuckets(
     std::function<Loop(BucketSnapshotT const&)> f,
     BucketListSnapshot<BucketT> const& snapshot) const

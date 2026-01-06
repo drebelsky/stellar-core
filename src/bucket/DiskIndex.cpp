@@ -130,6 +130,49 @@ DiskIndex<BucketT>::getRangeForType(LedgerEntryType type) const
 }
 
 template <class BucketT>
+std::vector<std::streamoff>
+DiskIndex<BucketT>::splitRange(std::streamoff start, std::streamoff end,
+                               size_t buckets) const
+{
+    auto iterStart = std::lower_bound(
+        mData.keysToOffset.begin(), mData.keysToOffset.end(), start,
+        [](const RangeIndex::value_type& entry, std::streamoff val) {
+            return entry.second <= val;
+        });
+    releaseAssert(iterStart != mData.keysToOffset.begin());
+    --iterStart;
+    auto iterEnd =
+        std::lower_bound(iterStart, mData.keysToOffset.end(), end,
+                         [](const RangeIndex::value_type& entry,
+                            std::streamoff val) { return entry.second < val; });
+    auto gap = iterEnd - iterStart;
+    std::vector<std::streamoff> res{start};
+    if (gap < buckets)
+    {
+        for (auto iter = ++iterStart; iter != iterEnd; ++iter)
+        {
+            res.push_back(iter->second);
+        }
+        return res;
+    }
+
+    size_t bucketWidth = gap / buckets;
+    size_t extra = end - bucketWidth * buckets;
+    auto iter = iterStart;
+    for (size_t i = 1; i < buckets; i++)
+    {
+        if (i - 1 < extra)
+        {
+            ++iter;
+        }
+        std::advance(iter, bucketWidth);
+        releaseAssert(iter < iterEnd);
+        res.push_back(iter->second);
+    }
+    return res;
+}
+
+template <class BucketT>
 DiskIndex<BucketT>::DiskIndex(BucketManager& bm,
                               std::filesystem::path const& filename,
                               std::streamoff pageSize, Hash const& hash,

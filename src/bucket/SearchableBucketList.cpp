@@ -8,6 +8,7 @@
 #include "bucket/LiveBucketList.h"
 #include "ledger/LedgerTxn.h"
 #include "util/GlobalChecks.h"
+#include "util/settings.h"
 
 #include <medida/timer.h>
 
@@ -85,8 +86,120 @@ SearchableLiveBucketListSnapshot::scanForEntriesOfType(
 {
     ZoneScoped;
     releaseAssert(mSnapshot);
-    auto f = [type, &callback](auto const& b) {
+    auto f = [type, &callback](LiveBucketSnapshot const& b) {
         return b.scanForEntriesOfType(type, callback);
+    };
+    loopAllBuckets(f, *mSnapshot);
+}
+void
+SearchableLiveBucketListSnapshot::scanForEntriesOfTypeReverse(
+    LedgerEntryType type,
+    std::function<Loop(BucketEntry const&)> callback) const
+{
+    ZoneScoped;
+    releaseAssert(mSnapshot);
+    auto f = [type, &callback](LiveBucketSnapshot const& b) {
+        return b.scanForEntriesOfType(type, callback);
+    };
+    loopAllBucketsReverse(f, *mSnapshot);
+}
+
+namespace
+{
+using EntryType = std::pair<BucketEntry, size_t>;
+
+struct Cmp
+{
+    bool
+    operator()(EntryType const& a, EntryType const& b) const
+    {
+        if constexpr (PopulateOptions::mode ==
+                      PopulateOptions::Mode::N_WAY_MERGE_BUCKET_ENTRY_ID_CMP)
+        {
+
+            if (BucketEntryIdCmp<LiveBucket>{}(a.first, b.first))
+            {
+                return false;
+            }
+            if (BucketEntryIdCmp<LiveBucket>{}(b.first, a.first))
+            {
+                return true;
+            }
+        }
+        else
+        {
+            BucketEntryType aty = a.first.type();
+            BucketEntryType bty = b.first.type();
+            releaseAssert(aty != METAENTRY);
+            releaseAssert(bty != METAENTRY);
+            auto& ak = (aty == DEADENTRY) ? a.first.deadEntry()
+                                          : LedgerEntryKey(a.first.liveEntry());
+            auto& bk = (bty == DEADENTRY) ? b.first.deadEntry()
+                                          : LedgerEntryKey(b.first.liveEntry());
+            if (ak < bk)
+            {
+                return false;
+            }
+            if (bk < ak)
+            {
+                return true;
+            }
+        }
+        return a.second > b.second;
+    };
+};
+} // namespace
+
+void
+SearchableLiveBucketListSnapshot::getEntriesOfType(
+    LedgerEntryType type,
+    std::function<void(BucketEntry const&)> callback) const
+{
+    ZoneScoped;
+    releaseAssert(mSnapshot);
+    auto& levels = mSnapshot->getLevels();
+    auto x = levels[0];
+    std::vector<BucketEntryIter> iters;
+    for (auto& level : levels)
+    {
+        iters.push_back(level.curr.getIterForType(type));
+        iters.push_back(level.snap.getIterForType(type));
+    }
+    std::priority_queue<EntryType, std::vector<EntryType>, Cmp> entries;
+    for (size_t i = 0; i < iters.size(); i++)
+    {
+        BucketEntry be;
+        if (iters[i].next(be))
+        {
+            entries.push({be, i});
+        }
+    }
+    while (!entries.empty())
+    {
+        callback(entries.top().first);
+        size_t index = entries.top().second;
+        entries.pop();
+        BucketEntry be;
+        if (iters[index].next(be))
+        {
+            entries.push({be, index});
+        }
+    }
+}
+
+void
+SearchableLiveBucketListSnapshot::parallelScanForEntriesOfType(
+    LedgerEntryType type,
+    std::vector<std::function<void(BucketEntry const&)>> shardCallbacks,
+    std::function<void()> joinCallback) const
+{
+    ZoneScoped;
+    releaseAssert(mSnapshot);
+    auto f = [type, &shardCallbacks,
+              &joinCallback](LiveBucketSnapshot const& b) {
+        b.parallelScanForEntriesOfType(type, shardCallbacks);
+        joinCallback();
+        return Loop::INCOMPLETE;
     };
     loopAllBuckets(f, *mSnapshot);
 }

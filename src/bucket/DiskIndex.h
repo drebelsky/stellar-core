@@ -145,6 +145,9 @@ template <class BucketT> class DiskIndex : public NonMovableOrCopyable
     std::optional<std::pair<std::streamoff, std::streamoff>>
     getRangeForType(LedgerEntryType type) const;
 
+    std::vector<std::streamoff>
+    splitRange(std::streamoff start, std::streamoff end, size_t buckets) const;
+
     // Returns page size for index
     std::streamoff
     getPageSize() const

@@ -66,6 +66,25 @@ template <class BucketT> class BucketSnapshotBase : public NonMovable
                   std::vector<typename BucketT::LoadT>& result) const;
 };
 
+class BucketEntryIter
+{
+    XDRInputFileStream mStream;
+    bool mDone{false};
+    LedgerEntryType mType;
+
+  public:
+    // returns false when at end
+    bool next(BucketEntry& be);
+    BucketEntryIter(const std::filesystem::path path, std::streamoff first,
+                    LedgerEntryType type)
+        : mType{type}
+    {
+        mStream.open(path);
+        mStream.seek(first);
+    };
+    BucketEntryIter() : mDone{true} {};
+};
+
 class LiveBucketSnapshot : public BucketSnapshotBase<LiveBucket>
 {
   public:
@@ -89,6 +108,12 @@ class LiveBucketSnapshot : public BucketSnapshotBase<LiveBucket>
     Loop scanForEntriesOfType(
         LedgerEntryType type,
         std::function<Loop(BucketEntry const&)> callback) const;
+
+    BucketEntryIter getIterForType(LedgerEntryType type) const;
+
+    void parallelScanForEntriesOfType(
+        LedgerEntryType type,
+        std::vector<std::function<void(BucketEntry const&)>> callbacks) const;
 };
 
 class HotArchiveBucketSnapshot : public BucketSnapshotBase<HotArchiveBucket>

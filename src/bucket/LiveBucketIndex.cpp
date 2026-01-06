@@ -294,6 +294,19 @@ LiveBucketIndex::getRangeForType(LedgerEntryType type) const
     return mInMemoryIndex->getRangeForType(type);
 }
 
+std::vector<std::streamoff>
+LiveBucketIndex::splitRange(std::streamoff start, std::streamoff end,
+                            size_t buckets) const
+{
+    if (mDiskIndex)
+    {
+        return mDiskIndex->splitRange(start, end, buckets);
+    }
+
+    releaseAssertOrThrow(mInMemoryIndex);
+    return mInMemoryIndex->splitRange(start, end, buckets);
+}
+
 uint32_t
 LiveBucketIndex::getPageSize() const
 {
