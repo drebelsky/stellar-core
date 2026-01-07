@@ -5,6 +5,7 @@ enum class Options
 {
     NONE = 0,
     PRESIZE = 1,
+    DUMP = 2,
 };
 
 constexpr Options
@@ -17,6 +18,18 @@ constexpr Options
 operator&(Options a, int b)
 {
     return static_cast<Options>(static_cast<int>(a) & b);
+}
+
+constexpr Options
+operator|(Options a, Options b)
+{
+    return static_cast<Options>(static_cast<int>(a) | static_cast<int>(b));
+}
+
+constexpr Options
+operator|(Options a, int b)
+{
+    return static_cast<Options>(static_cast<int>(a) | b);
 }
 
 enum class DataEntriesType

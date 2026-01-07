@@ -492,6 +492,37 @@ erase [[gnu::always_inline]] (T&& map, U&& key)
     map.erase(key);
 }
 
+// Similarly, we wrap this so that the .get() doesn't cause errors
+template <typename T>
+xdr::opaque_vec<>
+to_opaque(T&& entry)
+{
+    if constexpr (PopulateOptions::type ==
+                  PopulateOptions::DataEntriesType::DEFAULT)
+    {
+
+        return xdr::xdr_to_opaque(*entry.get().ledgerEntry);
+    }
+    else if constexpr (
+        PopulateOptions::type ==
+            PopulateOptions::DataEntriesType::LEDGER_ENTRY_LK_HASH ||
+        PopulateOptions::type ==
+            PopulateOptions::DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
+        PopulateOptions::type ==
+            PopulateOptions::DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
+    {
+        return xdr::xdr_to_opaque(entry);
+    }
+    else if constexpr (PopulateOptions::type ==
+                           PopulateOptions::DataEntriesType::OPAQUE_VEC ||
+                       PopulateOptions::type ==
+                           PopulateOptions::DataEntriesType::
+                               OPAQUE_VEC_XDR_HASH)
+    {
+        return entry;
+    }
+}
+
 // Config checking
 static_assert((PopulateOptions::options & 0b111) == PopulateOptions::options);
 static_assert(PopulateOptions::mode !=
@@ -680,30 +711,61 @@ InMemorySorobanState::initializeStateFromSnapshot(
             }
         };
 
-        Timer t("load CONTRACT_DATA entries");
-        if constexpr (PopulateOptions::mode ==
-                      PopulateOptions::Mode::ITERATE_BACKWARDS)
         {
-            snap->scanForEntriesOfTypeReverse(CONTRACT_DATA,
-                                              dataHandlerBackwards);
+            Timer t("load CONTRACT_DATA entries");
+            if constexpr (PopulateOptions::mode ==
+                          PopulateOptions::Mode::ITERATE_BACKWARDS)
+            {
+                snap->scanForEntriesOfTypeReverse(CONTRACT_DATA,
+                                                  dataHandlerBackwards);
+            }
+            else if constexpr (PopulateOptions::mode ==
+                                   PopulateOptions::Mode::N_WAY_MERGE ||
+                               PopulateOptions::mode ==
+                                   PopulateOptions::Mode::
+                                       N_WAY_MERGE_BUCKET_ENTRY_ID_CMP)
+            {
+                snap->getEntriesOfType(CONTRACT_DATA, dataHandlerMerge);
+            }
+            else if constexpr (PopulateOptions::mode ==
+                               PopulateOptions::Mode::ITERATE_PARALLEL)
+            {
+                snap->parallelScanForEntriesOfType(CONTRACT_DATA, callbacks,
+                                                   parallelJoin);
+            }
+            else
+            {
+                snap->scanForEntriesOfType(CONTRACT_DATA, dataHandler);
+            }
         }
-        else if constexpr (PopulateOptions::mode ==
-                               PopulateOptions::Mode::N_WAY_MERGE ||
-                           PopulateOptions::mode ==
-                               PopulateOptions::Mode::
-                                   N_WAY_MERGE_BUCKET_ENTRY_ID_CMP)
+        if constexpr ((PopulateOptions::options &
+                       PopulateOptions::Options::DUMP) ==
+                      PopulateOptions::Options::DUMP)
         {
-            snap->getEntriesOfType(CONTRACT_DATA, dataHandlerMerge);
-        }
-        else if constexpr (PopulateOptions::mode ==
-                           PopulateOptions::Mode::ITERATE_PARALLEL)
-        {
-            snap->parallelScanForEntriesOfType(CONTRACT_DATA, callbacks,
-                                               parallelJoin);
-        }
-        else
-        {
-            snap->scanForEntriesOfType(CONTRACT_DATA, dataHandler);
+            std::set<xdr::opaque_vec<>> entries;
+            for (auto const& entry : dataEntries)
+            {
+                entries.emplace(to_opaque(entry));
+            }
+            {
+                std::ofstream os{"state.bin", std::ios::binary | std::ios::out};
+                char buf[4];
+                for (auto const& entry : entries)
+                {
+                    uint32_t size = entry.size();
+                    releaseAssert(size < 0x80000000);
+                    buf[0] = (size >> 24 & 0xff) | '\x80';
+                    buf[1] = size >> 16 & 0xff;
+                    buf[2] = size >> 8 & 0xff;
+                    buf[3] = size & 0xff;
+                    os.write(buf, 4);
+                    os.write(reinterpret_cast<char const*>(entry.data()),
+                             entry.size());
+                }
+                releaseAssert(!os.bad());
+                os.close();
+                releaseAssert(!os.fail());
+            }
         }
     }
 

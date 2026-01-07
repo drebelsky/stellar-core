@@ -33,24 +33,45 @@ def main():
         "action", type=Action, choices=["compile", "time"], default=Action.COMPILE
     )
     parser.add_argument(
-        "--verbose", "-v", help="in compile, show make stdout; in time, show make stderr", action="store_true"
+        "--verbose",
+        "-v",
+        help="in compile, show make stdout; in time, show make stderr",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--check",
+        "-c",
+        help="check that we generate the right in-memory state",
+        action="store_true",
     )
     parser.add_argument(
         "-n",
         help="number of times to run each configuration",
         type=int,
+        default=1,
     )
     args = parser.parse_args()
+
     if args.action == Action.COMPILE:
         stdout = None if args.verbose else subprocess.DEVNULL
         stderr = None
     else:
         stdout = subprocess.DEVNULL
         stderr = None if args.verbose else subprocess.DEVNULL
-    stderr = (
-        None if args.verbose and args.action == Action.COMPILE else subprocess.DEVNULL
-    )
+
+    reference = b""
+    if args.check:
+        try:
+            with open("reference.bin", "rb") as f:
+                reference = f.read()
+        except FileNotFoundError:
+            print("--check specified, but reference.bin does not exist", file=sys.stderr)
+            exit(1)
+
     for option in ["NONE", "PRESIZE"]:
+        opt = option
+        if args.check:
+            opt += " | Options::DUMP"
         for mode in [
             "NORMAL",
             "N_WAY_MERGE",
@@ -73,7 +94,7 @@ def main():
             for type_ in types:
                 print("GREP CONFIG:", option, type_, mode, file=sys.stderr)
                 with open("src/util/settings.h", "w") as f:
-                    f.write(TEMPLATE.format(option, type_, mode))
+                    f.write(TEMPLATE.format(opt, type_, mode))
                 res = subprocess.run(
                     ["make", "-j{}".format(os.cpu_count())],
                     stdout=stdout,
@@ -83,13 +104,22 @@ def main():
                     assert res.returncode == 0
                     for i in range(args.n):
                         print("GREP ITER", i, file=sys.stderr)
-                        for line in subprocess.run(
+                        try:
+                            os.remove("/Users/daniel/sc-run/state.bin")
+                        except FileNotFoundError:
+                            pass
+                        res = subprocess.run(
                             ["src/stellar-core", "test", "tmp"],
                             capture_output=True,
                             text=True,
-                        ).stderr.splitlines():
+                        )
+                        assert res.returncode == 0
+                        for line in res.stderr.splitlines():
                             if "GREP" in line:
                                 print(line, file=sys.stderr)
+                        if args.check:
+                            with open("/Users/daniel/sc-run/state.bin", "rb") as f:
+                                assert f.read() == reference
 
 
 if __name__ == "__main__":
