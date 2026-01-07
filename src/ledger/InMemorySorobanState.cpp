@@ -419,14 +419,24 @@ struct Hash
         }
         else if constexpr (type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH)
         {
-            return stellar::shortHash::computeHash(xdr::xdr_to_opaque(le));
+            return stellar::shortHash::computeHash(
+                xdr::xdr_to_opaque(LedgerEntryKey(le)));
         }
         else if constexpr (type ==
                            DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
         {
-            return stellar::shortHash::xdrComputeHash(le);
+            return stellar::shortHash::xdrComputeHash(LedgerEntryKey(le));
         }
         return 0;
+    }
+};
+
+struct CmpLe
+{
+    bool
+    operator()(LedgerEntry const& a, LedgerEntry const& b)
+    {
+        return LedgerEntryKey(a) == LedgerEntryKey(b);
     }
 };
 
@@ -457,7 +467,7 @@ setType()
                        type == DataEntriesType::LEDGER_ENTRY_TO_OPAQUE_HASH ||
                        type == DataEntriesType::LEDGER_ENTRY_XDR_COMPUTE_HASH)
     {
-        return std::unordered_set<LedgerEntry, Hash>();
+        return std::unordered_set<LedgerEntry, Hash, CmpLe>();
     }
     else if constexpr (type == DataEntriesType::OPAQUE_VEC ||
                        type == DataEntriesType::OPAQUE_VEC_XDR_HASH)
@@ -529,6 +539,12 @@ static_assert(PopulateOptions::mode !=
                   PopulateOptions::Mode::ITERATE_BACKWARDS ||
               PopulateOptions::type ==
                   PopulateOptions::DataEntriesType::DEFAULT);
+static_assert((PopulateOptions::options & PopulateOptions::Options::DUMP) !=
+                  PopulateOptions::Options::DUMP ||
+              (PopulateOptions::type !=
+                   PopulateOptions::DataEntriesType::OPAQUE_VEC &&
+               PopulateOptions::type !=
+                   PopulateOptions::DataEntriesType::OPAQUE_VEC_XDR_HASH));
 } // namespace
 
 void

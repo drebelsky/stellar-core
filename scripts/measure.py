@@ -27,6 +27,22 @@ constexpr Mode mode = Mode::{};
 """
 
 
+def types_for(mode: str, check: bool) -> list[str]:
+    types = ["DEFAULT"]
+    if mode != "ITERATE_BACKWARDS":
+        types += [
+            "LEDGER_ENTRY_LK_HASH",
+            "LEDGER_ENTRY_TO_OPAQUE_HASH",
+            "LEDGER_ENTRY_XDR_COMPUTE_HASH",
+        ]
+        if not check:
+            types += [
+                "OPAQUE_VEC",
+                "OPAQUE_VEC_XDR_HASH",
+            ]
+    return types
+
+
 def main():
     parser = argparse.ArgumentParser("measure.py", description="")
     parser.add_argument(
@@ -65,7 +81,9 @@ def main():
             with open("reference.bin", "rb") as f:
                 reference = f.read()
         except FileNotFoundError:
-            print("--check specified, but reference.bin does not exist", file=sys.stderr)
+            print(
+                "--check specified, but reference.bin does not exist", file=sys.stderr
+            )
             exit(1)
 
     for option in ["NONE", "PRESIZE"]:
@@ -79,19 +97,7 @@ def main():
             "ITERATE_BACKWARDS",
             "ITERATE_PARALLEL",
         ]:
-            types = (
-                [
-                    "DEFAULT",
-                    "LEDGER_ENTRY_LK_HASH",
-                    "LEDGER_ENTRY_TO_OPAQUE_HASH",
-                    "LEDGER_ENTRY_XDR_COMPUTE_HASH",
-                    "OPAQUE_VEC",
-                    "OPAQUE_VEC_XDR_HASH",
-                ]
-                if mode != "ITERATE_BACKWARDS"
-                else ["DEFAULT"]
-            )
-            for type_ in types:
+            for type_ in types_for(mode, args.check):
                 print("GREP CONFIG:", option, type_, mode, file=sys.stderr)
                 with open("src/util/settings.h", "w") as f:
                     f.write(TEMPLATE.format(opt, type_, mode))
