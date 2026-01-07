@@ -106,7 +106,7 @@ SearchableLiveBucketListSnapshot::scanForEntriesOfTypeReverse(
 
 namespace
 {
-using EntryType = std::pair<BucketEntry, size_t>;
+using EntryType = std::pair<std::unique_ptr<BucketEntry>, size_t>;
 
 struct Cmp
 {
@@ -117,25 +117,27 @@ struct Cmp
                       PopulateOptions::Mode::N_WAY_MERGE_BUCKET_ENTRY_ID_CMP)
         {
 
-            if (BucketEntryIdCmp<LiveBucket>{}(a.first, b.first))
+            if (BucketEntryIdCmp<LiveBucket>{}(*a.first, *b.first))
             {
                 return false;
             }
-            if (BucketEntryIdCmp<LiveBucket>{}(b.first, a.first))
+            if (BucketEntryIdCmp<LiveBucket>{}(*b.first, *a.first))
             {
                 return true;
             }
         }
         else
         {
-            BucketEntryType aty = a.first.type();
-            BucketEntryType bty = b.first.type();
+            BucketEntryType aty = a.first->type();
+            BucketEntryType bty = b.first->type();
             releaseAssert(aty != METAENTRY);
             releaseAssert(bty != METAENTRY);
-            auto& ak = (aty == DEADENTRY) ? a.first.deadEntry()
-                                          : LedgerEntryKey(a.first.liveEntry());
-            auto& bk = (bty == DEADENTRY) ? b.first.deadEntry()
-                                          : LedgerEntryKey(b.first.liveEntry());
+            auto const& ak = (aty == DEADENTRY)
+                                 ? a.first->deadEntry()
+                                 : LedgerEntryKey(a.first->liveEntry());
+            auto const& bk = (bty == DEADENTRY)
+                                 ? b.first->deadEntry()
+                                 : LedgerEntryKey(b.first->liveEntry());
             if (ak < bk)
             {
                 return false;
@@ -171,18 +173,18 @@ SearchableLiveBucketListSnapshot::getEntriesOfType(
         BucketEntry be;
         if (iters[i].next(be))
         {
-            entries.push({be, i});
+            entries.push({std::make_unique<BucketEntry>(be), i});
         }
     }
     while (!entries.empty())
     {
-        callback(entries.top().first);
+        callback(*entries.top().first);
         size_t index = entries.top().second;
         entries.pop();
         BucketEntry be;
         if (iters[index].next(be))
         {
-            entries.push({be, index});
+            entries.push({std::make_unique<BucketEntry>(be), index});
         }
     }
 }
