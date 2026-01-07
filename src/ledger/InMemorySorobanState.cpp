@@ -497,15 +497,26 @@ struct Timer
 // on untake `if constexpr` branches
 template <typename T, typename U>
 inline void
-erase [[gnu::always_inline]] (T&& map, U&& key)
+erase [[gnu::always_inline]] (T&& set, U&& value)
 {
-    map.erase(key);
+    set.erase(value);
+}
+
+template <typename T, typename U>
+inline void
+alwaysInsert [[gnu::always_inline]] (T&& set, U&& value)
+{
+    if (auto [iter, added] = set.emplace(value); !added)
+    {
+        erase(set, iter);
+        set.emplace(value);
+    }
 }
 
 // Similarly, we wrap this so that the .get() doesn't cause errors
 template <typename T>
 xdr::opaque_vec<>
-to_opaque(T&& entry)
+toOpaque(T&& entry)
 {
     if constexpr (PopulateOptions::type ==
                   PopulateOptions::DataEntriesType::DEFAULT)
@@ -621,8 +632,9 @@ InMemorySorobanState::initializeStateFromSnapshot(
                     erase(dataEntries, InternalContractDataMapEntry{lk});
                     return Loop::INCOMPLETE;
                 }
-                dataEntries.emplace(
-                    InternalContractDataMapEntry{be.liveEntry(), TTLData{}});
+                auto entry =
+                    InternalContractDataMapEntry{be.liveEntry(), TTLData{}};
+                alwaysInsert(dataEntries, entry);
             }
             return Loop::INCOMPLETE;
         };
@@ -761,7 +773,7 @@ InMemorySorobanState::initializeStateFromSnapshot(
             std::set<xdr::opaque_vec<>> entries;
             for (auto const& entry : dataEntries)
             {
-                entries.emplace(to_opaque(entry));
+                entries.emplace(toOpaque(entry));
             }
             {
                 std::ofstream os{"state.bin", std::ios::binary | std::ios::out};
