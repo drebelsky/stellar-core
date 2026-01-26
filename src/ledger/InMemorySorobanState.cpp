@@ -6,8 +6,10 @@
 #include "bucket/SearchableBucketList.h"
 #include "ledger/LedgerTypeUtils.h"
 #include "ledger/SorobanMetrics.h"
+#include "util/Decoder.h"
 #include "util/GlobalChecks.h"
 #include <cstdint>
+#include <tracy/public/tracy/TracyC.h>
 
 namespace stellar
 {
@@ -403,6 +405,56 @@ InMemorySorobanState::getTTL(LedgerKey const& ledgerKey) const
     return nullptr;
 }
 
+template <typename T, T value, typename tag> struct Steal
+{
+    friend T
+    stealMem(tag)
+    {
+        return value;
+    }
+};
+
+struct BucketEntryTag
+{
+};
+
+// Access to std::shared_ptr<BucketT const> const mBucket;
+template struct Steal<const std::shared_ptr<const stellar::LiveBucket>
+                          BucketSnapshotBase<LiveBucket>::*,
+                      &BucketSnapshotBase<LiveBucket>::mBucket, BucketEntryTag>;
+
+const std::shared_ptr<const stellar::LiveBucket>
+    BucketSnapshotBase<LiveBucket>::* stealMem(BucketEntryTag);
+
+inline uint32_t
+read32(std::vector<char> const& buf, size_t offset)
+{
+    return (static_cast<uint8_t>(buf[offset + 0])
+            << static_cast<uint32_t>(24)) |
+           (static_cast<uint8_t>(buf[offset + 1])
+            << static_cast<uint32_t>(16)) |
+           (static_cast<uint8_t>(buf[offset + 2]) << static_cast<uint32_t>(8)) |
+           (static_cast<uint8_t>(buf[offset + 3]) << static_cast<uint32_t>(0));
+}
+
+struct Timer
+{
+    std::chrono::steady_clock::time_point start;
+    std::string name;
+    Timer(std::string const& n)
+        : start(std::chrono::steady_clock::now()), name(n)
+    {
+    }
+    ~Timer()
+    {
+        auto end = std::chrono::steady_clock::now();
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                .count();
+        CLOG_FATAL(Ledger, "GREP {} in {} ms", name, duration);
+    }
+};
+
 void
 InMemorySorobanState::initializeStateFromSnapshot(
     SearchableSnapshotConstPtr snap, uint32_t ledgerVersion)
@@ -413,6 +465,7 @@ InMemorySorobanState::initializeStateFromSnapshot(
 
     if (protocolVersionStartsFrom(ledgerVersion, SOROBAN_PROTOCOL_VERSION))
     {
+        Timer t{"initializeStateFromSnapshot"};
         auto sorobanConfig = SorobanNetworkConfig::loadFromLedger(snap);
         // Check if entry is a DEADENTRY and add it to deletedKeys. Otherwise,
         // check if the entry is shadowed by a DEADENTRY.
@@ -480,9 +533,186 @@ InMemorySorobanState::initializeStateFromSnapshot(
             return Loop::INCOMPLETE;
         };
 
-        snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
+        deletedKeys.reserve(10'000'000);
+
+        std::vector<std::vector<char>> buffers;
+        buffers.reserve(BucketListBase<LiveBucket>::kNumLevels * 2 - 1);
+        {
+            ZoneScopedN("read CONTRACT_DATA entries");
+            Timer t{"read all CONTRACT_DATA entries"};
+            snap->loopAllBuckets([&buffers](LiveBucketSnapshot const& bucket) {
+                ZoneScopedN("callback()");
+                auto& mBucket = *(bucket.*stealMem(BucketEntryTag{}));
+                auto range = mBucket.getRangeForType(CONTRACT_DATA);
+                if (range)
+                {
+                    ZoneScopedN("inner()");
+                    auto [start, end] = *range;
+                    std::ifstream stream{mBucket.getFilename().string(),
+                                         std::ios::binary};
+                    assert(stream && stream.good());
+                    stream.seekg(start);
+                    TracyCZoneN(ctx, "allocate", true);
+                    TracyCZoneEnd(ctx);
+                    buffers.push_back({});
+                    auto& buf = buffers[buffers.size() - 1];
+                    buf.resize(end - start);
+                    TracyCZoneN(ctx2, "read", true);
+                    {
+                        Timer t{"read"};
+                        stream.read(buf.data(), buf.size());
+                    }
+                    TracyCZoneEnd(ctx2);
+                    std::cerr << "GREP Read CONTRACT_DATA bucket "
+                              << mBucket.getFilename() << " size "
+                              << end - start << "\n";
+#if 0
+                    std::cerr << "GREP actual read size " << stream.gcount()
+                              << "\n";
+#endif
+                    std::cerr << "GREP start: " << start << " end: " << end
+                              << "\n";
+                    assert(stream.gcount() == buf.size());
+                }
+                else
+                {
+                    std::cerr << "GREP NONE HERE" << std::endl;
+                }
+                return Loop::INCOMPLETE;
+            });
+        }
+        {
+            struct Hash
+            {
+                size_t
+                operator()(LedgerEntry const& le) const
+                {
+                    return stellar::shortHash::computeHash(
+                        xdr::xdr_to_opaque(LedgerEntryKey(le)));
+                }
+            };
+
+            struct CmpLe
+            {
+                bool
+                operator()(LedgerEntry const& a, LedgerEntry const& b) const
+                {
+                    return LedgerEntryKey(a) == LedgerEntryKey(b);
+                }
+            };
+
+            struct BHash
+            {
+                size_t
+                operator()(ByteSlice const& bs) const
+                {
+                    ZoneScopedN("BHash::operator()");
+                    return stellar::shortHash::computeHash(bs);
+                }
+            };
+
+            struct BCmp
+            {
+                bool
+                operator()(ByteSlice const& a, ByteSlice const& b) const
+                {
+                    ZoneScopedN("BCmp::operator()");
+                    if (a.size() != b.size())
+                        return false;
+                    return std::memcmp(a.data(), b.data(), a.size()) == 0;
+                }
+            };
+
+            std::unordered_set<ByteSlice, BHash, BCmp> seen;
+            seen.reserve(10'000'000);
+            std::unordered_set<LedgerEntry, Hash, CmpLe> live;
+            live.reserve(1'000'000);
+            size_t liveSize = 0;
+            {
+                Timer t{"parse all CONTRACT_DATA entries"};
+                int b = 0;
+                for (auto& buf : buffers)
+                {
+                    std::cerr << "Buf# " << b++ << std::endl;
+                    size_t i = 0;
+                    while (i < buf.size())
+                    {
+                        assert(i + 4 <= buf.size());
+                        uint32_t const xdrSize = read32(buf, i) & 0x7fffffff;
+                        i += 4;
+                        assert(i + xdrSize <= buf.size());
+                        uint32_t const kind = read32(buf, i);
+                        if (!(kind == LIVEENTRY || kind == INITENTRY ||
+                              kind == DEADENTRY))
+                        {
+                            std::cerr << i << " " << kind << std::endl;
+                            throw std::runtime_error(
+                                "InMemorySorobanState::"
+                                "initializeStateFromSnapshot: "
+                                "invalid entry kind");
+                        };
+                        if (kind == DEADENTRY)
+                        {
+                            assert(read32(buf, i + 4) == CONTRACT_DATA);
+                            ZoneScopedN("seenInsert1()");
+                            seen.insert(ByteSlice{reinterpret_cast<void const*>(
+                                                      buf.data() + i + 8),
+                                                  xdrSize - 8});
+                        }
+                        else
+                        {
+                            assert(read32(buf, i + 8) == CONTRACT_DATA);
+                            xdr::xdr_get g(buf.data() + i + 16,
+                                           buf.data() + i + xdrSize);
+                            LedgerKey::_contractData_t le;
+                            {
+                                ZoneScopedN("get ledgerkey");
+                                xdr::xdr_argpack_archive(g, le);
+                            }
+                            TracyCZoneN(ctx, "seenInsert2()", true);
+                            if (seen
+                                    .insert(ByteSlice{
+                                        buf.data() + i + 16,
+                                        static_cast<size_t>(
+                                            reinterpret_cast<char const*>(
+                                                g.p_) -
+                                            (buf.data() + i + 16))})
+                                    .second)
+                            {
+                                TracyCZoneEnd(ctx);
+                                liveSize++;
+                                {
+                                    ZoneScopedN("parse LedgerEntry");
+                                    xdr::xdr_get g{buf.data() + i + 4,
+                                                   buf.data() + i + xdrSize};
+                                    LedgerEntry le;
+                                    xdr::xdr_argpack_archive(g, le);
+                                    {
+                                        ZoneScopedN("insert live");
+                                        // createContractDataEntry(le);
+                                        live.insert(le);
+                                    }
+                                    g.done();
+                                }
+                            }
+                            else
+                            {
+                                TracyCZoneEnd(ctx);
+                            }
+                        }
+                        i += xdrSize;
+                    }
+                }
+                std::cerr << "GREP unique live CONTRACT_DATA entries: "
+                          << liveSize << "\n";
+            }
+        }
+#if 0
+        // snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
         snap->scanForEntriesOfType(TTL, ttlHandler);
+        deletedKeys.clear();
         snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+#endif
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();
