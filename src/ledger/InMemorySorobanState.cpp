@@ -455,6 +455,159 @@ struct Timer
     }
 };
 
+namespace
+{
+template <LedgerEntryType LedgerType> char constexpr READ_MSG[] = "";
+template <>
+char constexpr READ_MSG<CONTRACT_DATA>[] = "read CONTRACT_DATA entries";
+template <> char constexpr READ_MSG<TTL>[] = "read TTL entries";
+
+template <LedgerEntryType LedgerType> char constexpr DEDUP_MSG[] = "";
+template <>
+char constexpr DEDUP_MSG<CONTRACT_DATA>[] = "read CONTRACT_DATA entries";
+template <> char constexpr DEDUP_MSG<TTL>[] = "read TTL entries";
+
+struct BHash
+{
+    size_t
+    operator()(ByteSlice const& bs) const
+    {
+        ZoneScopedN("BHash::operator()");
+        return stellar::shortHash::computeHash(bs);
+    }
+};
+
+struct BCmp
+{
+    bool
+    operator()(ByteSlice const& a, ByteSlice const& b) const
+    {
+        ZoneScopedN("BCmp::operator()");
+        if (a.size() != b.size())
+            return false;
+        return std::memcmp(a.data(), b.data(), a.size()) == 0;
+    }
+};
+
+template <LedgerEntryType LedgerType>
+void
+getLiveEntries(SearchableSnapshotConstPtr snap,
+               std::function<void(LedgerEntry const&)> const& processEntry)
+{
+    static_assert(LedgerType == CONTRACT_DATA || LedgerType == TTL);
+    std::vector<std::vector<char>> buffers;
+    buffers.reserve(BucketListBase<LiveBucket>::kNumLevels * 2 - 1);
+    {
+        ZoneScopedN(READ_MSG<LedgerType>);
+        Timer t{READ_MSG<LedgerType>};
+        snap->loopAllBuckets([&buffers](LiveBucketSnapshot const& bucket) {
+            auto& mBucket = *(bucket.*stealMem(BucketEntryTag{}));
+            auto range = mBucket.getRangeForType(LedgerType);
+            if (range)
+            {
+                auto [start, end] = *range;
+                std::ifstream stream{mBucket.getFilename().string(),
+                                     std::ios::binary};
+                assert(stream && stream.good());
+                if (end == std::numeric_limits<std::streamoff>::max())
+                {
+                    stream.seekg(0, std::ios::end);
+                    end = stream.tellg();
+                }
+                stream.seekg(start);
+                buffers.push_back({});
+                auto& buf = buffers[buffers.size() - 1];
+                buf.resize(end - start);
+                stream.read(buf.data(), buf.size());
+                assert(stream.gcount() == buf.size());
+            }
+            return Loop::INCOMPLETE;
+        });
+    }
+
+    std::unordered_set<ByteSlice, BHash, BCmp> seen;
+    seen.reserve(10'000'000);
+    Timer t{DEDUP_MSG<LedgerType>};
+    {
+        ZoneScopedN(DEDUP_MSG<LedgerType>);
+        for (auto& buf : buffers)
+        {
+            size_t i = 0;
+            while (i < buf.size())
+            {
+                assert(i + 4 <= buf.size());
+                uint32_t const xdrSize = read32(buf, i) & 0x7fffffff;
+                i += 4;
+                assert(i + xdrSize <= buf.size());
+                uint32_t const kind = read32(buf, i);
+                assert(kind == LIVEENTRY || kind == INITENTRY ||
+                       kind == DEADENTRY);
+                if (kind == DEADENTRY)
+                {
+                    assert(read32(buf, i + 4) == LedgerType);
+                    seen.insert(ByteSlice{
+                        reinterpret_cast<void const*>(buf.data() + i + 8),
+                        xdrSize - 8});
+                }
+                else
+                {
+                    assert(read32(buf, i + 8) == LedgerType);
+                    void const* bsBuf;
+                    size_t bsExtent;
+                    if constexpr (LedgerType == TTL)
+                    {
+                        bsBuf = buf.data() + i + 12;
+                        bsExtent = stellar::Hash::container_fixed_nelem;
+                    }
+                    else
+                    {
+                        xdr::xdr_get g(buf.data() + i + 16,
+                                       buf.data() + i + xdrSize);
+                        LedgerKey::_contractData_t le;
+                        xdr::xdr_argpack_archive(g, le);
+                        bsBuf = buf.data() + i + 16;
+                        bsExtent = reinterpret_cast<char const*>(g.p_) -
+                                   (buf.data() + i + 16);
+                    }
+                    if (seen.insert(ByteSlice{bsBuf, bsExtent}).second)
+                    {
+                        xdr::xdr_get g{buf.data() + i + 4,
+                                       buf.data() + i + xdrSize};
+                        LedgerEntry le;
+                        xdr::xdr_argpack_archive(g, le);
+                        g.done();
+                        processEntry(le);
+                    }
+                }
+                i += xdrSize;
+            }
+        }
+    }
+}
+
+namespace unused
+{
+struct Hash
+{
+    size_t
+    operator()(LedgerEntry const& le) const
+    {
+        return stellar::shortHash::computeHash(
+            xdr::xdr_to_opaque(LedgerEntryKey(le)));
+    }
+};
+
+struct CmpLe
+{
+    bool
+    operator()(LedgerEntry const& a, LedgerEntry const& b) const
+    {
+        return LedgerEntryKey(a) == LedgerEntryKey(b);
+    }
+};
+}
+}
+
 void
 InMemorySorobanState::initializeStateFromSnapshot(
     SearchableSnapshotConstPtr snap, uint32_t ledgerVersion)
@@ -485,37 +638,6 @@ InMemorySorobanState::initializeStateFromSnapshot(
             return deletedKeys.find(lk) == deletedKeys.end();
         };
 
-        auto contractDataHandler = [this,
-                                    &shouldAddToMap](BucketEntry const& be) {
-            if (!shouldAddToMap(be, CONTRACT_DATA))
-            {
-                return Loop::INCOMPLETE;
-            }
-
-            auto lk = LedgerEntryKey(be.liveEntry());
-            if (!get(lk))
-            {
-                createContractDataEntry(be.liveEntry());
-            }
-
-            return Loop::INCOMPLETE;
-        };
-
-        auto ttlHandler = [this, &shouldAddToMap](BucketEntry const& be) {
-            if (!shouldAddToMap(be, TTL))
-            {
-                return Loop::INCOMPLETE;
-            }
-
-            auto lk = LedgerEntryKey(be.liveEntry());
-            if (!hasTTL(lk))
-            {
-                createTTL(be.liveEntry());
-            }
-
-            return Loop::INCOMPLETE;
-        };
-
         auto contractCodeHandler = [this, &shouldAddToMap, &sorobanConfig,
                                     ledgerVersion](BucketEntry const& be) {
             if (!shouldAddToMap(be, CONTRACT_CODE))
@@ -533,186 +655,40 @@ InMemorySorobanState::initializeStateFromSnapshot(
             return Loop::INCOMPLETE;
         };
 
-        deletedKeys.reserve(10'000'000);
+        std::vector<LedgerEntry> contractDataEntries;
+        contractDataEntries.reserve(1'000'000);
+        std::vector<LedgerEntry> ttlEntries;
+        ttlEntries.reserve(1'000'000);
 
-        std::vector<std::vector<char>> buffers;
-        buffers.reserve(BucketListBase<LiveBucket>::kNumLevels * 2 - 1);
+        std::thread contractDataThread{[&contractDataEntries, &snap]() {
+            getLiveEntries<CONTRACT_DATA>(
+                snap, [&contractDataEntries](LedgerEntry const& le) {
+                    contractDataEntries.push_back(le);
+                });
+        }};
+
+        getLiveEntries<TTL>(snap, [&ttlEntries](LedgerEntry const& le) {
+            ttlEntries.push_back(le);
+        });
+
+        contractDataThread.join();
         {
-            ZoneScopedN("read CONTRACT_DATA entries");
-            Timer t{"read all CONTRACT_DATA entries"};
-            snap->loopAllBuckets([&buffers](LiveBucketSnapshot const& bucket) {
-                ZoneScopedN("callback()");
-                auto& mBucket = *(bucket.*stealMem(BucketEntryTag{}));
-                auto range = mBucket.getRangeForType(CONTRACT_DATA);
-                if (range)
-                {
-                    ZoneScopedN("inner()");
-                    auto [start, end] = *range;
-                    std::ifstream stream{mBucket.getFilename().string(),
-                                         std::ios::binary};
-                    assert(stream && stream.good());
-                    stream.seekg(start);
-                    TracyCZoneN(ctx, "allocate", true);
-                    TracyCZoneEnd(ctx);
-                    buffers.push_back({});
-                    auto& buf = buffers[buffers.size() - 1];
-                    buf.resize(end - start);
-                    TracyCZoneN(ctx2, "read", true);
-                    {
-                        Timer t{"read"};
-                        stream.read(buf.data(), buf.size());
-                    }
-                    TracyCZoneEnd(ctx2);
-                    std::cerr << "GREP Read CONTRACT_DATA bucket "
-                              << mBucket.getFilename() << " size "
-                              << end - start << "\n";
-#if 0
-                    std::cerr << "GREP actual read size " << stream.gcount()
-                              << "\n";
-#endif
-                    std::cerr << "GREP start: " << start << " end: " << end
-                              << "\n";
-                    assert(stream.gcount() == buf.size());
-                }
-                else
-                {
-                    std::cerr << "GREP NONE HERE" << std::endl;
-                }
-                return Loop::INCOMPLETE;
-            });
-        }
-        {
-            struct Hash
+            Timer t{"Insert CONTRACT_DATA entries"};
+            for (auto const& entry : contractDataEntries)
             {
-                size_t
-                operator()(LedgerEntry const& le) const
-                {
-                    return stellar::shortHash::computeHash(
-                        xdr::xdr_to_opaque(LedgerEntryKey(le)));
-                }
-            };
-
-            struct CmpLe
-            {
-                bool
-                operator()(LedgerEntry const& a, LedgerEntry const& b) const
-                {
-                    return LedgerEntryKey(a) == LedgerEntryKey(b);
-                }
-            };
-
-            struct BHash
-            {
-                size_t
-                operator()(ByteSlice const& bs) const
-                {
-                    ZoneScopedN("BHash::operator()");
-                    return stellar::shortHash::computeHash(bs);
-                }
-            };
-
-            struct BCmp
-            {
-                bool
-                operator()(ByteSlice const& a, ByteSlice const& b) const
-                {
-                    ZoneScopedN("BCmp::operator()");
-                    if (a.size() != b.size())
-                        return false;
-                    return std::memcmp(a.data(), b.data(), a.size()) == 0;
-                }
-            };
-
-            std::unordered_set<ByteSlice, BHash, BCmp> seen;
-            seen.reserve(10'000'000);
-            std::unordered_set<LedgerEntry, Hash, CmpLe> live;
-            live.reserve(1'000'000);
-            size_t liveSize = 0;
-            {
-                Timer t{"parse all CONTRACT_DATA entries"};
-                int b = 0;
-                for (auto& buf : buffers)
-                {
-                    std::cerr << "Buf# " << b++ << std::endl;
-                    size_t i = 0;
-                    while (i < buf.size())
-                    {
-                        assert(i + 4 <= buf.size());
-                        uint32_t const xdrSize = read32(buf, i) & 0x7fffffff;
-                        i += 4;
-                        assert(i + xdrSize <= buf.size());
-                        uint32_t const kind = read32(buf, i);
-                        if (!(kind == LIVEENTRY || kind == INITENTRY ||
-                              kind == DEADENTRY))
-                        {
-                            std::cerr << i << " " << kind << std::endl;
-                            throw std::runtime_error(
-                                "InMemorySorobanState::"
-                                "initializeStateFromSnapshot: "
-                                "invalid entry kind");
-                        };
-                        if (kind == DEADENTRY)
-                        {
-                            assert(read32(buf, i + 4) == CONTRACT_DATA);
-                            ZoneScopedN("seenInsert1()");
-                            seen.insert(ByteSlice{reinterpret_cast<void const*>(
-                                                      buf.data() + i + 8),
-                                                  xdrSize - 8});
-                        }
-                        else
-                        {
-                            assert(read32(buf, i + 8) == CONTRACT_DATA);
-                            xdr::xdr_get g(buf.data() + i + 16,
-                                           buf.data() + i + xdrSize);
-                            LedgerKey::_contractData_t le;
-                            {
-                                ZoneScopedN("get ledgerkey");
-                                xdr::xdr_argpack_archive(g, le);
-                            }
-                            TracyCZoneN(ctx, "seenInsert2()", true);
-                            if (seen
-                                    .insert(ByteSlice{
-                                        buf.data() + i + 16,
-                                        static_cast<size_t>(
-                                            reinterpret_cast<char const*>(
-                                                g.p_) -
-                                            (buf.data() + i + 16))})
-                                    .second)
-                            {
-                                TracyCZoneEnd(ctx);
-                                liveSize++;
-                                {
-                                    ZoneScopedN("parse LedgerEntry");
-                                    xdr::xdr_get g{buf.data() + i + 4,
-                                                   buf.data() + i + xdrSize};
-                                    LedgerEntry le;
-                                    xdr::xdr_argpack_archive(g, le);
-                                    {
-                                        ZoneScopedN("insert live");
-                                        // createContractDataEntry(le);
-                                        live.insert(le);
-                                    }
-                                    g.done();
-                                }
-                            }
-                            else
-                            {
-                                TracyCZoneEnd(ctx);
-                            }
-                        }
-                        i += xdrSize;
-                    }
-                }
-                std::cerr << "GREP unique live CONTRACT_DATA entries: "
-                          << liveSize << "\n";
+                createContractDataEntry(entry);
             }
         }
-#if 0
-        // snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
-        snap->scanForEntriesOfType(TTL, ttlHandler);
-        deletedKeys.clear();
+        {
+            Timer t{"Insert TTL entries"};
+            for (auto const& entry : ttlEntries)
+            {
+                createTTL(entry);
+            }
+        }
+
+        deletedKeys.reserve(10'000'000);
         snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
-#endif
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();
