@@ -526,10 +526,23 @@ getLiveEntries(SearchableSnapshotConstPtr snap,
     }
 
     std::unordered_set<ByteSlice, BHash, BCmp> seen;
-    seen.reserve(10'000'000);
     Timer t{DEDUP_MSG<LedgerType>};
     {
         ZoneScopedN(DEDUP_MSG<LedgerType>);
+
+        size_t numEntries = 0;
+        for (auto& buf : buffers)
+        {
+            size_t i = 0;
+            while (i < buf.size())
+            {
+                numEntries++;
+                assert(i + 4 <= buf.size());
+                uint32_t const xdrSize = read32(buf, i) & 0x7fffffff;
+                i += 4 + xdrSize;
+            }
+        }
+        seen.reserve(numEntries);
         for (auto& buf : buffers)
         {
             size_t i = 0;
