@@ -464,8 +464,8 @@ template <> char constexpr READ_MSG<TTL>[] = "read TTL entries";
 
 template <LedgerEntryType LedgerType> char constexpr DEDUP_MSG[] = "";
 template <>
-char constexpr DEDUP_MSG<CONTRACT_DATA>[] = "read CONTRACT_DATA entries";
-template <> char constexpr DEDUP_MSG<TTL>[] = "read TTL entries";
+char constexpr DEDUP_MSG<CONTRACT_DATA>[] = "dedup CONTRACT_DATA entries";
+template <> char constexpr DEDUP_MSG<TTL>[] = "dedup TTL entries";
 
 struct BHash
 {
@@ -584,28 +584,6 @@ getLiveEntries(SearchableSnapshotConstPtr snap,
         }
     }
 }
-
-namespace unused
-{
-struct Hash
-{
-    size_t
-    operator()(LedgerEntry const& le) const
-    {
-        return stellar::shortHash::computeHash(
-            xdr::xdr_to_opaque(LedgerEntryKey(le)));
-    }
-};
-
-struct CmpLe
-{
-    bool
-    operator()(LedgerEntry const& a, LedgerEntry const& b) const
-    {
-        return LedgerEntryKey(a) == LedgerEntryKey(b);
-    }
-};
-}
 }
 
 void
@@ -656,9 +634,9 @@ InMemorySorobanState::initializeStateFromSnapshot(
         };
 
         std::vector<LedgerEntry> contractDataEntries;
-        contractDataEntries.reserve(1'000'000);
+        contractDataEntries.reserve(3'000'000);
         std::vector<LedgerEntry> ttlEntries;
-        ttlEntries.reserve(1'000'000);
+        ttlEntries.reserve(3'000'000);
 
         std::thread contractDataThread{[&contractDataEntries, &snap]() {
             getLiveEntries<CONTRACT_DATA>(
@@ -672,23 +650,49 @@ InMemorySorobanState::initializeStateFromSnapshot(
         });
 
         contractDataThread.join();
-        {
-            Timer t{"Insert CONTRACT_DATA entries"};
-            for (auto const& entry : contractDataEntries)
-            {
-                createContractDataEntry(entry);
-            }
-        }
+
+        deletedKeys.reserve(10'000'000);
+        snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+
+        std::unordered_map<LedgerKey, TTLData> ttlMap;
+        ttlMap.reserve(ttlEntries.size());
         {
             Timer t{"Insert TTL entries"};
             for (auto const& entry : ttlEntries)
             {
-                createTTL(entry);
+                auto lk = LedgerEntryKey(entry);
+                auto newTtlData = TTLData(entry.data.ttl().liveUntilLedgerSeq,
+                                          entry.lastModifiedLedgerSeq);
+                auto codeIt = mContractCodeEntries.find(lk.ttl().keyHash);
+                if (codeIt != mContractCodeEntries.end())
+                {
+                    // ContractCode exists but has no TTL yet - update it
+                    // Verify TTL hasn't been set yet (should be default
+                    // initialized)
+                    releaseAssertOrThrow(codeIt->second.ttlData.isDefault());
+                    codeIt->second.ttlData = newTtlData;
+                }
+                else
+                {
+                    assert(ttlMap.emplace(lk, newTtlData).second);
+                }
             }
         }
 
-        deletedKeys.reserve(10'000'000);
-        snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+        {
+            Timer t{"Insert CONTRACT_DATA entries"};
+            for (auto const& entry : contractDataEntries)
+            {
+                auto ttl = ttlMap.find(getTTLKey(LedgerEntryKey(entry)));
+                assert(ttl != ttlMap.end());
+                assert(mContractDataEntries
+                           .emplace(
+                               InternalContractDataMapEntry{entry, ttl->second})
+                           .second);
+                updateStateSizeOnEntryUpdate(0, xdr::xdr_size(entry),
+                                             /*isContractCode=*/false);
+            }
+        }
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();
