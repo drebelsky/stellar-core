@@ -453,6 +453,55 @@ InMemorySorobanState::initializeStateFromSnapshot(
     if (protocolVersionStartsFrom(ledgerVersion, SOROBAN_PROTOCOL_VERSION))
     {
         auto sorobanConfig = SorobanNetworkConfig::loadFromLedger(snap);
+        // Try loading from pre-serialized data
+        {
+            bool loaded = false;
+            XDRInputFileStream is;
+            try
+            {
+                is.open(std::string{"contract-data.xdr"});
+                loaded = true;
+            }
+            catch (FileSystemException const& e)
+            {
+            }
+
+            if (loaded)
+            {
+                LedgerEntry le;
+                while (is.readOne(le))
+                {
+                    auto ttlData = TTLData();
+                    is.readOne(ttlData.liveUntilLedgerSeq);
+                    is.readOne(ttlData.lastModifiedLedgerSeq);
+                    mContractDataEntries.emplace(InternalContractDataMapEntry(
+                        std::make_shared<LedgerEntry const>(le), ttlData));
+                    updateStateSizeOnEntryUpdate(0, xdr::xdr_size(le),
+                                                 /*isContractCode=*/false);
+                }
+
+                // Load contract-code
+                XDRInputFileStream is;
+                is.open(std::string{"contract-code.xdr"});
+                while (is.readOne(le))
+                {
+                    auto ttlData = TTLData();
+                    is.readOne(ttlData.liveUntilLedgerSeq);
+                    is.readOne(ttlData.lastModifiedLedgerSeq);
+                    uint32_t entrySize =
+                        contractCodeSizeForRent(le, sorobanConfig, ledgerVersion);
+                    mContractCodeEntries.emplace(
+                        getTTLKey(LedgerEntryKey(le)).ttl().keyHash,
+                        ContractCodeMapEntryT(
+                            std::make_shared<LedgerEntry const>(le), ttlData,
+                            entrySize));
+                    updateStateSizeOnEntryUpdate(0, entrySize,
+                                                 /*isContractCode=*/true);
+                }
+                return;
+            }
+        }
+
         // Check if entry is a DEADENTRY and add it to deletedKeys. Otherwise,
         // check if the entry is shadowed by a DEADENTRY.
         std::unordered_set<LedgerKey> deletedKeys;
@@ -522,6 +571,36 @@ InMemorySorobanState::initializeStateFromSnapshot(
         snap->scanForEntriesOfType(CONTRACT_DATA, contractDataHandler);
         snap->scanForEntriesOfType(TTL, ttlHandler);
         snap->scanForEntriesOfType(CONTRACT_CODE, contractCodeHandler);
+
+        // Dump contract data
+        {
+            VirtualClock clock;
+            XDROutputFileStream os(clock.getIOContext(), /*fsyncOnClose=*/true);
+            os.open("contract-data.xdr");
+            for (auto& entry : mContractDataEntries)
+            {
+                auto& le = *entry.get().ledgerEntry;
+                auto ttlData = entry.get().ttlData;
+                os.writeOne(le);
+                os.writeOne(ttlData.liveUntilLedgerSeq);
+                os.writeOne(ttlData.lastModifiedLedgerSeq);
+            }
+        }
+
+        // Dump contract code
+        {
+            VirtualClock clock;
+            XDROutputFileStream os(clock.getIOContext(), /*fsyncOnClose=*/true);
+            os.open("contract-code.xdr");
+            for (auto& entry : mContractCodeEntries)
+            {
+                auto& le = *entry.second.ledgerEntry;
+                auto ttlData = entry.second.ttlData;
+                os.writeOne(le);
+                os.writeOne(ttlData.liveUntilLedgerSeq);
+                os.writeOne(ttlData.lastModifiedLedgerSeq);
+            }
+        }
     }
 
     mLastClosedLedgerSeq = snap->getLedgerSeq();
