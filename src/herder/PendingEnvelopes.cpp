@@ -35,8 +35,16 @@ PendingEnvelopes::PendingEnvelopes(Application& app, HerderImpl& herder)
     , mTxSetFetcher(
           app,
           [&app](Peer::pointer peer, Hash hash) {
-              auto archive = app.getHistoryArchiveManager().getHistoryArchive(
-                  KeyUtils::toStrKey(peer->getPeerID()));
+              std::string nodeName = KeyUtils::toStrKey(peer->getPeerID());
+              if (auto iter = app.getConfig().VALIDATOR_NAMES.find(nodeName);
+                  iter != app.getConfig().VALIDATOR_NAMES.end())
+              {
+                  nodeName = iter->second;
+              }
+              auto archive =
+                  app.getHistoryArchiveManager().getHistoryArchive(nodeName);
+              // TODO: we can probably loosen this requirement in the future
+              releaseAssert(archive);
               if (archive)
               {
                   app.getWorkScheduler().scheduleWork<FetchTxSetWork>(
@@ -291,7 +299,8 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
     // I think this is maybe the eventual behavior we want, but right now this
     // doesn't work nicely with the triggerNextLedger nominate logic (maybe that
     // needs a callback?)
-    // TODO: for now, we can just kind of hope that we will have published by the time the peer is requesting it I guess
+    // TODO: for now, we can just kind of hope that we will have published by
+    // the time the peer is requesting it I guess
 #if 0
     if (!uploaded)
     {
