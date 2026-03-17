@@ -288,10 +288,16 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
         }
     }
 
+    // I think this is maybe the eventual behavior we want, but right now this
+    // doesn't work nicely with the triggerNextLedger nominate logic (maybe that
+    // needs a callback?)
+    // TODO: for now, we can just kind of hope that we will have published by the time the peer is requesting it I guess
+#if 0
     if (!uploaded)
     {
         return nullptr;
     }
+#endif
     return res;
 }
 

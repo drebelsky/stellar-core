@@ -19,6 +19,7 @@
 #include "ledger/LedgerManager.h"
 #include "main/PersistentState.h"
 #include "process/ProcessManager.h"
+#include "simulation/Simulation.h"
 #include "test/TestAccount.h"
 #include "test/TestUtils.h"
 #include "test/TxTests.h"
@@ -2112,4 +2113,47 @@ TEST_CASE("CheckpointBuilder", "[history][publish]")
         cb.checkpointComplete(ledgerSeq);
         validateCheckpointFiles(*app, ledgerSeq, true);
     }
+}
+
+TEST_CASE("tmp")
+{
+    Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
+    Simulation simulation{Simulation::OVER_LOOPBACK, networkID};
+
+    SIMULATION_CREATE_NODE(1);
+    SIMULATION_CREATE_NODE(2);
+
+    SCPQuorumSet qSet0;
+    qSet0.threshold = 2;
+    qSet0.validators.push_back(v1NodeID);
+    qSet0.validators.push_back(v2NodeID);
+
+    TmpDirHistoryConfigurator t1;
+    Config cfg1 = getTestConfig(1);
+    cfg1 = t1.configure(cfg1, true);
+
+    TmpDirHistoryConfigurator t2;
+    Config cfg2 = getTestConfig(2);
+    cfg2 = t2.configure(cfg2, true);
+
+    REQUIRE(cfg1.HISTORY.size() == 1);
+    REQUIRE(cfg2.HISTORY.size() == 1);
+
+    HistoryArchiveConfiguration hac1 = cfg1.HISTORY.begin()->second;
+    HistoryArchiveConfiguration hac2 = cfg2.HISTORY.begin()->second;
+
+    std::string skey1 = KeyUtils::toStrKey(v1NodeID);
+    std::string skey2 = KeyUtils::toStrKey(v2NodeID);
+
+    cfg1.HISTORY[skey2] = HistoryArchiveConfiguration{skey2, hac2.mGetCmd};
+    cfg2.HISTORY[skey1] = HistoryArchiveConfiguration{skey1, hac1.mGetCmd};
+
+    simulation.addNode(v1SecretKey, qSet0, &cfg1);
+    simulation.addNode(v2SecretKey, qSet0, &cfg2);
+    simulation.addPendingConnection(v1NodeID, v2NodeID);
+
+    simulation.startAllNodes();
+    simulation.crankUntil(
+        [&]() { return simulation.haveAllExternalized(3, 1); },
+        10 * simulation.getExpectedLedgerCloseTime(), false);
 }

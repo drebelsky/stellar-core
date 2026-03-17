@@ -1248,9 +1248,16 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case DONT_HAVE:
     {
-        CLOG_FATAL(Overlay, "Received DONT_HAVE from {}. Peer: {}", toString(),
-                   mAppConnector.getConfig().toShortString(mPeerID));
-        releaseAssert(false);
+        if (stellarMsg.dontHave().type == TX_SET ||
+            stellarMsg.dontHave().type == GENERALIZED_TX_SET)
+        {
+            const char* typeStr = xdr::xdr_traits<MessageType>::enum_name(
+                stellarMsg.dontHave().type);
+            CLOG_FATAL(Overlay, "Received DONT_HAVE from {} for {}. Peer: {}",
+                       toString(), typeStr ? typeStr : "UNKNOWN",
+                       mAppConnector.getConfig().toShortString(mPeerID));
+            releaseAssert(false);
+        }
         auto t = mOverlayMetrics.mRecvDontHaveTimer.TimeScope();
         recvDontHave(stellarMsg);
     }
