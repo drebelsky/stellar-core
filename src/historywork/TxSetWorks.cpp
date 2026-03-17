@@ -38,13 +38,13 @@ FetchTxSetWork::doWork()
 
     XDRInputFileStream in;
     in.open(mFileInfo.localPath_nogz());
-    GeneralizedTransactionSet txSet;
+    StoredTransactionSet txSet;
     if (!in.readOne(txSet))
     {
         return State::WORK_FAILURE;
     }
     in.close();
-    mTxSet = TxSetXDRFrame::makeFromWire(txSet);
+    mTxSet = TxSetXDRFrame::makeFromStoredTxSet(txSet);
     // TODO: consider whether it's better to call the callback here or in
     // onSuccess
     return State::WORK_SUCCESS;
@@ -81,7 +81,8 @@ PutTxSetWork::PutTxSetWork(Application& app, Hash const& hash,
     , mFileInfo(mTmpDir, FileType::HISTORY_FILE_TYPE_TXSET, binToHex(hash))
     , mGzipWork(nullptr)
 {
-    releaseAssert(txSet->isGeneralizedTxSet());
+    // We need to be able to disseminate non-generalized tx sets for the initial
+    // upgrade releaseAssert(txSet->isGeneralizedTxSet());
 }
 
 BasicWork::State
@@ -91,8 +92,8 @@ PutTxSetWork::doWork()
     {
         XDROutputFileStream out(mApp.getClock().getIOContext(), true);
         out.open(mFileInfo.localPath_nogz());
-        GeneralizedTransactionSet xdrTxSet;
-        mTxSet->toXDR(xdrTxSet);
+        StoredTransactionSet xdrTxSet;
+        mTxSet->storeXDR(xdrTxSet);
         out.writeOne(xdrTxSet);
         out.close();
         mGzipWork = addWork<GzipFileWork>(mFileInfo.localPath_nogz());
