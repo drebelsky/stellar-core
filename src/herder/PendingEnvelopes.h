@@ -72,8 +72,9 @@ class PendingEnvelopes
     // because shared_ptr ref counting is thread-safe TxSetXDRFrameConstPtr
     // itself is immutable, and thus thread-safe
     RandomEvictionCache<Hash, TxSetFramCacheItem> mTxSetCache;
-    // weak references to all known txsets
-    UnorderedMap<Hash, std::weak_ptr<TxSetXDRFrame const>> mKnownTxSets;
+    // weak references to all known txsets, and whether they've been published
+    UnorderedMap<Hash, std::pair<std::weak_ptr<TxSetXDRFrame const>, bool>>
+        mKnownTxSets;
 
     // keep track of txset/qset hash -> size pairs for quick access
     RandomEvictionCache<Hash, size_t> mValueSizeCache;

@@ -642,19 +642,6 @@ Peer::sendSCPQuorumSet(SCPQuorumSetPtr qSet)
 }
 
 void
-Peer::sendGetTxSet(uint256 const& setID)
-{
-    ZoneScoped;
-    releaseAssert(threadIsMain());
-    StellarMessage newMsg;
-    newMsg.type(GET_TX_SET);
-    newMsg.txSetHash() = setID;
-
-    auto msgPtr = std::make_shared<StellarMessage const>(newMsg);
-    sendMessage(msgPtr);
-}
-
-void
 Peer::sendGetQuorumSet(uint256 const& setID)
 {
     ZoneScoped;
@@ -1261,6 +1248,9 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case DONT_HAVE:
     {
+        CLOG_FATAL(Overlay, "Received DONT_HAVE from {}. Peer: {}", toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
         auto t = mOverlayMetrics.mRecvDontHaveTimer.TimeScope();
         recvDontHave(stellarMsg);
     }
@@ -1303,6 +1293,9 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case GET_TX_SET:
     {
+        CLOG_FATAL(Overlay, "Received GET_TX_SET from {}. Peer: {}", toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
         auto t = mOverlayMetrics.mRecvGetTxSetTimer.TimeScope();
         recvGetTxSet(stellarMsg);
     }
@@ -1310,6 +1303,9 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case TX_SET:
     {
+        CLOG_FATAL(Overlay, "Received TX_SET from {}. Peer: {}", toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
 #ifdef BUILD_TESTS
         if (OverlayManager::isFloodMessage(stellarMsg))
         {
@@ -1327,6 +1323,10 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case GENERALIZED_TX_SET:
     {
+        CLOG_FATAL(Overlay, "Received GENERALIZED_TX_SET from {}. Peer: {}",
+                   toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
         auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
         recvGeneralizedTxSet(stellarMsg);
     }

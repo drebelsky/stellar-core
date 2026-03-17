@@ -352,7 +352,6 @@ class Peer : public std::enable_shared_from_this<Peer>,
     void cancelTimers();
 
     std::string msgSummary(StellarMessage const& stellarMsg);
-    void sendGetTxSet(uint256 const& setID);
     void sendGetQuorumSet(uint256 const& setID);
     void sendGetScpState(uint32 ledgerSeq);
     void sendErrorAndDrop(ErrorCode error, std::string const& message);

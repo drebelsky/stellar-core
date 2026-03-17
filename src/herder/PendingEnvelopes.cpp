@@ -5,6 +5,8 @@
 #include "herder/HerderPersistence.h"
 #include "herder/HerderUtils.h"
 #include "herder/TxSetFrame.h"
+#include "history/HistoryArchiveManager.h"
+#include "historywork/TxSetWorks.h"
 #include "main/Application.h"
 #include "main/Config.h"
 #include "overlay/OverlayManager.h"
@@ -14,6 +16,7 @@
 #include "util/Logging.h"
 #include "util/MetricsRegistry.h"
 #include "util/UnorderedSet.h"
+#include "work/WorkScheduler.h"
 #include <Tracy.hpp>
 #include <xdrpp/marshal.h>
 
@@ -30,7 +33,19 @@ PendingEnvelopes::PendingEnvelopes(Application& app, HerderImpl& herder)
     , mHerder(herder)
     , mQsetCache(QSET_CACHE_SIZE)
     , mTxSetFetcher(
-          app, [](Peer::pointer peer, Hash hash) { peer->sendGetTxSet(hash); })
+          app,
+          [&app](Peer::pointer peer, Hash hash) {
+              auto archive = app.getHistoryArchiveManager().getHistoryArchive(
+                  KeyUtils::toStrKey(peer->getPeerID()));
+              if (archive)
+              {
+                  app.getWorkScheduler().scheduleWork<FetchTxSetWork>(
+                      hash, archive, [&app, hash](TxSetXDRFrameConstPtr res) {
+                          releaseAssert(res);
+                          app.getHerder().recvTxSet(hash, res);
+                      });
+              }
+          })
     , mQuorumSetFetcher(app, [](Peer::pointer peer,
                                 Hash hash) { peer->sendGetQuorumSet(hash); })
     , mTxSetCache(TXSET_CACHE_SIZE)
@@ -61,9 +76,9 @@ PendingEnvelopes::peerDoesntHave(MessageType type, Hash const& itemID,
 {
     switch (type)
     {
-    // Subtle: it is important to treat both TX_SET and GENERALIZED_TX_SET the
-    // same way here, since the sending node may have the type wrong depending
-    // on the protocol version
+    // Subtle: it is important to treat both TX_SET and GENERALIZED_TX_SET
+    // the same way here, since the sending node may have the type wrong
+    // depending on the protocol version
     case TX_SET:
     case GENERALIZED_TX_SET:
         mTxSetFetcher.doesntHave(itemID, peer);
@@ -185,29 +200,26 @@ TxSetXDRFrameConstPtr
 PendingEnvelopes::putTxSet(Hash const& hash, uint64 slot,
                            TxSetXDRFrameConstPtr txset)
 {
+    bool touch = true;
+    // TODO: ugly hack for experimenting; inline implementation of
+    // getKnownTxSet with touch == true, so we can get the addition info
+    // about whether the TxSet was ever known (if it was, we don't try
+    // uploading)
+#if 0
     auto res = getKnownTxSet(hash, slot, true);
-    if (!res)
-    {
-        res = txset;
-        mKnownTxSets[hash] = res;
-        mTxSetCache.put(hash, std::make_pair(slot, res));
-    }
-    return res;
-}
-
-// tries to find a txset in memory, setting touch also touches the LRU,
-// extending the lifetime of the result *and* updating the slot number
-// to a greater value if needed
-TxSetXDRFrameConstPtr
-PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
-{
+#else
     // slot is only used when `touch` is set
     releaseAssert(touch || (slot == 0));
     TxSetXDRFrameConstPtr res;
     auto it = mKnownTxSets.find(hash);
+    bool shouldPublish = false;
     if (it != mKnownTxSets.end())
     {
-        res = it->second.lock();
+        res = it->second.first.lock();
+    }
+    else
+    {
+        shouldPublish = true;
     }
 
     // refresh the cache for this key
@@ -223,6 +235,62 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
         {
             mTxSetCache.put(hash, std::make_pair(slot, res));
         }
+    }
+#endif
+    if (!res)
+    {
+        res = txset;
+        auto& matched = mKnownTxSets[hash];
+        matched.first = res;
+        matched.second = !shouldPublish;
+        if (shouldPublish)
+        {
+            mApp.getWorkScheduler().scheduleWork<PutTxSetWork>(
+                hash, txset, [&uploaded(matched.second)](bool success) {
+                    releaseAssert(success);
+                    uploaded = true;
+                });
+        }
+        mTxSetCache.put(hash, std::make_pair(slot, res));
+    }
+    return res;
+}
+
+// tries to find a txset in memory, setting touch also touches the LRU,
+// extending the lifetime of the result *and* updating the slot number
+// to a greater value if needed
+TxSetXDRFrameConstPtr
+PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
+{
+    // slot is only used when `touch` is set
+    releaseAssert(touch || (slot == 0));
+    TxSetXDRFrameConstPtr res;
+    auto it = mKnownTxSets.find(hash);
+    bool uploaded = false;
+    if (it != mKnownTxSets.end())
+    {
+        uploaded = it->second.second;
+        res = it->second.first.lock();
+    }
+
+    // refresh the cache for this key
+    if (res && touch)
+    {
+        bool update = true;
+        if (mTxSetCache.exists(hash))
+        {
+            auto& v = mTxSetCache.get(hash);
+            update = (slot > v.first);
+        }
+        if (update)
+        {
+            mTxSetCache.put(hash, std::make_pair(slot, res));
+        }
+    }
+
+    if (!uploaded)
+    {
+        return nullptr;
     }
     return res;
 }
@@ -454,7 +522,7 @@ PendingEnvelopes::cleanKnownData()
     auto it2 = mKnownTxSets.begin();
     while (it2 != mKnownTxSets.end())
     {
-        if (it2->second.expired())
+        if (it2->second.first.expired())
         {
             it2 = mKnownTxSets.erase(it2);
         }
@@ -886,7 +954,8 @@ shouldReportCostOutlier(double possibleOutlierCost, double expectedCost,
 
     if (possibleOutlierCost / expectedCost > ratioLimit)
     {
-        // If we're off by too much from the selected cluster, report the value
+        // If we're off by too much from the selected cluster, report the
+        // value
         return true;
     }
     return false;
