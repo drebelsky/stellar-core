@@ -602,7 +602,8 @@ LedgerApplyManagerImpl::fileDownloaded(FileType type, uint32_t num)
         mMetrics.mTxSetsDownloaded += num;
     }
     else if (type != FileType::HISTORY_FILE_TYPE_RESULTS &&
-             type != FileType::HISTORY_FILE_TYPE_SCP)
+             type != FileType::HISTORY_FILE_TYPE_SCP &&
+             type != FileType::HISTORY_FILE_TYPE_TXSET)
     {
         throw std::runtime_error(fmt::format(
             FMT_STRING(
