@@ -1310,9 +1310,6 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case TX_SET:
     {
-        CLOG_FATAL(Overlay, "Received TX_SET from {}. Peer: {}", toString(),
-                   mAppConnector.getConfig().toShortString(mPeerID));
-        releaseAssert(false);
 #ifdef BUILD_TESTS
         if (OverlayManager::isFloodMessage(stellarMsg))
         {
@@ -1322,6 +1319,9 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
         else
 #endif
         {
+            CLOG_FATAL(Overlay, "Received TX_SET from {}. Peer: {}", toString(),
+                       mAppConnector.getConfig().toShortString(mPeerID));
+            releaseAssert(false);
             auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
             recvTxSet(stellarMsg);
         }
