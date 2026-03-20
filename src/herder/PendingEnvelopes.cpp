@@ -212,10 +212,11 @@ PendingEnvelopes::updateMetrics()
     mReadyCount.set_count(ready);
 }
 
-TxSetXDRFrameConstPtr
+std::vector<std::function<void()>>*
 PendingEnvelopes::putTxSet(Hash const& hash, uint64 slot,
                            TxSetXDRFrameConstPtr txset)
 {
+    releaseAssert(threadIsMain());
     bool touch = true;
     // TODO: ugly hack for experimenting; inline implementation of
     // getKnownTxSet with touch == true, so we can get the addition info
@@ -258,25 +259,45 @@ PendingEnvelopes::putTxSet(Hash const& hash, uint64 slot,
         res = txset;
         auto& matched = mKnownTxSets[hash];
         matched.first = res;
+        releaseAssert(shouldPublish);
         matched.second = !shouldPublish;
         if (shouldPublish)
         {
             mApp.getWorkScheduler().scheduleWork<PutTxSetWork>(
                 hash, txset,
                 [&uploaded(matched.second),
-                 start(std::chrono::steady_clock::now())](bool success) {
-                    releaseAssert(success);
+                 start(std::chrono::steady_clock::now()),
+                 &mTxSetCallbacks(this->mTxSetCallbacks), hash,
+                 &mApp(this->mApp)](bool success) {
                     CLOG_DEBUG(
                         Herder, "PutTxSetWork took {} ms",
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - start)
                             .count());
+                    releaseAssert(success);
+                    releaseAssert(threadIsMain());
                     uploaded = true;
+                    auto iter = mTxSetCallbacks.find(hash);
+                    releaseAssert(iter != mTxSetCallbacks.end());
+                    for (auto cb : iter->second)
+                    {
+                        mApp.postOnMainThread(
+                            std::move(cb),
+                            "PendingEnvelopes::putTxSet callback");
+                    }
+                    mTxSetCallbacks.erase(iter);
                 });
         }
         mTxSetCache.put(hash, std::make_pair(slot, res));
     }
-    return res;
+    if (shouldPublish || (it != mKnownTxSets.end() && !it->second.second))
+    {
+        return &mTxSetCallbacks[hash];
+    }
+    else
+    {
+        return nullptr;
+    }
 }
 
 // tries to find a txset in memory, setting touch also touches the LRU,
@@ -285,6 +306,7 @@ PendingEnvelopes::putTxSet(Hash const& hash, uint64 slot,
 TxSetXDRFrameConstPtr
 PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
 {
+    releaseAssert(threadIsMain());
     // slot is only used when `touch` is set
     releaseAssert(touch || (slot == 0));
     TxSetXDRFrameConstPtr res;
@@ -316,7 +338,7 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
     // needs a callback?)
     // TODO: for now, we can just kind of hope that we will have published by
     // the time the peer is requesting it I guess
-#if 0
+#if 1
     if (!uploaded)
     {
         return nullptr;
@@ -325,15 +347,16 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
     return res;
 }
 
-void
+std::vector<std::function<void()>>*
 PendingEnvelopes::addTxSet(Hash const& hash, uint64 lastSeenSlotIndex,
                            TxSetXDRFrameConstPtr txset)
 {
     ZoneScoped;
     CLOG_TRACE(Herder, "Add TxSet {}", hexAbbrev(hash));
 
-    putTxSet(hash, lastSeenSlotIndex, txset);
+    auto res = putTxSet(hash, lastSeenSlotIndex, txset);
     mTxSetFetcher.recv(hash, mFetchTxSetTimer);
+    return res;
 }
 
 bool

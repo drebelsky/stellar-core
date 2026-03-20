@@ -1543,8 +1543,8 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     // Inform the item fetcher so queries from other peers about his txSet
     // can be answered. Note this can trigger SCP callbacks, externalize, etc
     // if we happen to build a txset that we were trying to download.
-    mPendingEnvelopes.addTxSet(txSetHash, lcl.header.ledgerSeq + 1,
-                               proposedSet);
+    auto callbacks = mPendingEnvelopes.addTxSet(
+        txSetHash, lcl.header.ledgerSeq + 1, proposedSet);
 
     lcl = mLedgerManager.getLastClosedLedgerHeader();
     // use the slot index from ledger manager here as our vote is based off
@@ -1597,8 +1597,19 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
 
     StellarValue newProposedValue = makeStellarValue(
         txSetHash, nextCloseTime, newUpgrades, mApp.getConfig().NODE_SEED);
-    mHerderSCPDriver.nominate(slotIndex, newProposedValue, proposedSet,
-                              lcl.header.scpValue);
+    if (callbacks)
+    {
+        callbacks->push_back(
+            [this, slotIndex, newProposedValue, proposedSet, lcl]() {
+                mHerderSCPDriver.nominate(slotIndex, newProposedValue,
+                                          proposedSet, lcl.header.scpValue);
+            });
+    }
+    else
+    {
+        mHerderSCPDriver.nominate(slotIndex, newProposedValue, proposedSet,
+                                  lcl.header.scpValue);
+    }
 }
 
 void

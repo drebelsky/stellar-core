@@ -75,6 +75,8 @@ class PendingEnvelopes
     // weak references to all known txsets, and whether they've been published
     UnorderedMap<Hash, std::pair<std::weak_ptr<TxSetXDRFrame const>, bool>>
         mKnownTxSets;
+    // Callbacks for when a txset is published
+    UnorderedMap<Hash, std::vector<std::function<void()>>> mTxSetCallbacks;
 
     // keep track of txset/qset hash -> size pairs for quick access
     RandomEvictionCache<Hash, size_t> mValueSizeCache;
@@ -164,16 +166,17 @@ class PendingEnvelopes
      * recvSCPEnvelope which in turn may cause calls to @see recvSCPEnvelope
      * in PendingEnvelopes.
      */
-    void addTxSet(Hash const& hash, uint64 lastSeenSlotIndex,
-                  TxSetXDRFrameConstPtr txset);
+    std::vector<std::function<void()>>* addTxSet(Hash const& hash,
+                                                 uint64 lastSeenSlotIndex,
+                                                 TxSetXDRFrameConstPtr txset);
 
     /**
-        Adds @p txset to the cache and returns the txset referenced by the cache
-        NB: if caller wants to continue using txset after the call, it should
-       use the returned value instead
+        Adds @p txset to the cache and returns if the tx set was already pushed.
+        In the event the the tx set was not already pushed, returns a pointer to
+       the list of callbacks.
     */
-    TxSetXDRFrameConstPtr putTxSet(Hash const& hash, uint64 slot,
-                                   TxSetXDRFrameConstPtr txset);
+    std::vector<std::function<void()>>* putTxSet(Hash const& hash, uint64 slot,
+                                                 TxSetXDRFrameConstPtr txset);
 
     /**
      * Check if @p txset identified by @p hash was requested before from peers.
