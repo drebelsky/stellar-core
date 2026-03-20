@@ -48,8 +48,16 @@ PendingEnvelopes::PendingEnvelopes(Application& app, HerderImpl& herder)
               if (archive)
               {
                   app.getWorkScheduler().scheduleWork<FetchTxSetWork>(
-                      hash, archive, [&app, hash](TxSetXDRFrameConstPtr res) {
+                      hash, archive,
+                      [&app, hash, start(std::chrono::steady_clock::now())](
+                          TxSetXDRFrameConstPtr res) {
                           releaseAssert(res);
+                          CLOG_DEBUG(
+                              Herder, "FetchTxSetWork took {} ms",
+                              std::chrono::duration_cast<
+                                  std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count());
                           app.getHerder().recvTxSet(hash, res);
                       });
               }
@@ -254,8 +262,15 @@ PendingEnvelopes::putTxSet(Hash const& hash, uint64 slot,
         if (shouldPublish)
         {
             mApp.getWorkScheduler().scheduleWork<PutTxSetWork>(
-                hash, txset, [&uploaded(matched.second)](bool success) {
+                hash, txset,
+                [&uploaded(matched.second),
+                 start(std::chrono::steady_clock::now())](bool success) {
                     releaseAssert(success);
+                    CLOG_DEBUG(
+                        Herder, "PutTxSetWork took {} ms",
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count());
                     uploaded = true;
                 });
         }
