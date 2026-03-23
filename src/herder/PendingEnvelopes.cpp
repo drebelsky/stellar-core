@@ -338,7 +338,8 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
     // needs a callback?)
     // TODO: for now, we can just kind of hope that we will have published by
     // the time the peer is requesting it I guess
-#if 1
+    // When this is enabled, the while loop in `ItemFetcher::recv()` infinite loops
+#if 0
     if (!uploaded)
     {
         return nullptr;
