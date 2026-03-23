@@ -311,10 +311,8 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
     releaseAssert(touch || (slot == 0));
     TxSetXDRFrameConstPtr res;
     auto it = mKnownTxSets.find(hash);
-    bool uploaded = false;
     if (it != mKnownTxSets.end())
     {
-        uploaded = it->second.second;
         res = it->second.first.lock();
     }
 
@@ -333,18 +331,11 @@ PendingEnvelopes::getKnownTxSet(Hash const& hash, uint64 slot, bool touch)
         }
     }
 
-    // I think this is maybe the eventual behavior we want, but right now this
-    // doesn't work nicely with the triggerNextLedger nominate logic (maybe that
-    // needs a callback?)
-    // TODO: for now, we can just kind of hope that we will have published by
-    // the time the peer is requesting it I guess
-    // When this is enabled, the while loop in `ItemFetcher::recv()` infinite loops
-#if 0
-    if (!uploaded)
-    {
-        return nullptr;
-    }
-#endif
+    // We intentionally return the TX set even if not yet uploaded. Upload
+    // gating is handled in envelopeReady() (defers SCP processing) and
+    // addTxSet() (defers ItemFetcher::recv). We can't gate here because SCP
+    // callbacks (validateValue, combineCandidates, wrapEnvelope) need the
+    // TX set data regardless of upload status.
     return res;
 }
 
@@ -356,7 +347,19 @@ PendingEnvelopes::addTxSet(Hash const& hash, uint64 lastSeenSlotIndex,
     CLOG_TRACE(Herder, "Add TxSet {}", hexAbbrev(hash));
 
     auto res = putTxSet(hash, lastSeenSlotIndex, txset);
-    mTxSetFetcher.recv(hash, mFetchTxSetTimer);
+    if (res)
+    {
+        // Upload in progress — defer processing waiting envelopes
+        // until the upload completes
+        res->push_back([this, hash]() {
+            mTxSetFetcher.recv(hash, mFetchTxSetTimer);
+        });
+    }
+    else
+    {
+        // Already uploaded (or was already known) — process immediately
+        mTxSetFetcher.recv(hash, mFetchTxSetTimer);
+    }
     return res;
 }
 
@@ -667,6 +670,26 @@ void
 PendingEnvelopes::envelopeReady(SCPEnvelope const& envelope)
 {
     ZoneScoped;
+
+    // Don't process the envelope until all referenced TX sets have been
+    // uploaded to the archive. We can't gate in getKnownTxSet (SCP callbacks
+    // need the TX set data) or isFullyFetched (would need matching startFetch
+    // changes). Instead, defer here: the envelope is already in the
+    // "processed" set, so it won't be re-fetched; we just delay adding it to
+    // mReadyEnvelopes (and thus feeding it to SCP) until the upload completes.
+    for (auto const& h : getValidatedTxSetHashes(envelope))
+    {
+        auto it = mKnownTxSets.find(h);
+        if (it != mKnownTxSets.end() && !it->second.second)
+        {
+            auto cbIter = mTxSetCallbacks.find(h);
+            releaseAssert(cbIter != mTxSetCallbacks.end());
+            cbIter->second.push_back(
+                [this, envelope]() { envelopeReady(envelope); });
+            return;
+        }
+    }
+
     auto slot = envelope.statement.slotIndex;
     CLOG_TRACE(Herder, "Envelope ready {} i:{} t:{}",
                hexAbbrev(xdrSha256(envelope)), slot,
