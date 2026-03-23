@@ -19,6 +19,7 @@
 #include "herder/TxSetFrame.h"
 #include "herder/TxSetUtils.h"
 #include "ledger/LedgerManager.h"
+#include "ledger/LedgerManagerImpl.h"
 #include "ledger/LedgerTxnImpl.h"
 #include "ledger/P23HotArchiveBug.h"
 #include "lib/json/json.h"
@@ -1599,11 +1600,23 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
         txSetHash, nextCloseTime, newUpgrades, mApp.getConfig().NODE_SEED);
     if (callbacks)
     {
-        callbacks->push_back(
-            [this, slotIndex, newProposedValue, proposedSet, lcl]() {
+        callbacks->push_back([this, slotIndex, newProposedValue, proposedSet,
+                              lcl, &lm{mApp.getLedgerManager()}]() {
+            if (lm.isApplying())
+            {
+                LedgerManagerImpl& lmImpl = static_cast<LedgerManagerImpl&>(lm);
+                lmImpl.scheduleAfterApplying([this, slotIndex, newProposedValue,
+                                              proposedSet, lcl]() {
+                    mHerderSCPDriver.nominate(slotIndex, newProposedValue,
+                                              proposedSet, lcl.header.scpValue);
+                });
+            }
+            else
+            {
                 mHerderSCPDriver.nominate(slotIndex, newProposedValue,
                                           proposedSet, lcl.header.scpValue);
-            });
+            }
+        });
     }
     else
     {

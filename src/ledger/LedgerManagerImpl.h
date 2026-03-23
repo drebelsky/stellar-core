@@ -306,6 +306,7 @@ class LedgerManagerImpl : public LedgerManager
     // Use in the context of parallel ledger apply to indicate background thread
     // is currently closing a ledger or has ledgers queued to apply.
     bool mCurrentlyApplyingLedger{false};
+    std::vector<std::function<void()>> mDoneApplyingCallbacks;
 
     static std::vector<MutableTxResultPtr> processFeesSeqNums(
         ApplicableTxSetFrame const& txSet, AbstractLedgerTxn& ltxOuter,
@@ -479,6 +480,8 @@ class LedgerManagerImpl : public LedgerManager
 
   public:
     LedgerManagerImpl(Application& app);
+
+    void scheduleAfterApplying(std::function<void()>&& fn);
 
     void moveToSynced() override;
     void beginApply() override;

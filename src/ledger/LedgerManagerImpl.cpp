@@ -1369,6 +1369,11 @@ LedgerManagerImpl::ledgerCloseComplete(
     if (doneApplying)
     {
         mCurrentlyApplyingLedger = false;
+        for (auto& cb : mDoneApplyingCallbacks)
+        {
+            cb();
+        }
+        mDoneApplyingCallbacks.clear();
     }
 
     // Continue execution on the main thread
@@ -1388,6 +1393,12 @@ LedgerManagerImpl::ledgerCloseComplete(
         mApp.getHerder().lastClosedLedgerIncreased(
             appliedLatest, ledgerData.getTxSet(), upgradeApplied);
     }
+}
+
+void
+LedgerManagerImpl::scheduleAfterApplying(std::function<void()>&& cb)
+{
+    mDoneApplyingCallbacks.push_back(std::move(cb));
 }
 
 void
