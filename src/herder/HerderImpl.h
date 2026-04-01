@@ -151,7 +151,6 @@ class HerderImpl : public Herder
     void sendSCPStateToPeer(uint32 ledgerSeq, Peer::pointer peer) override;
 
     bool recvSCPQuorumSet(Hash const& hash, SCPQuorumSet const& qset) override;
-    bool recvTxSet(Hash const& hash, TxSetXDRFrameConstPtr txset) override;
     void peerDoesntHave(MessageType type, uint256 const& itemID,
                         Peer::pointer peer) override;
     TxSetXDRFrameConstPtr getTxSet(Hash const& hash) override;

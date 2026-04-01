@@ -293,8 +293,6 @@ class Peer : public std::enable_shared_from_this<Peer>,
     void recvSendMore(StellarMessage const& msg);
 
     void recvGetTxSet(StellarMessage const& msg);
-    void recvTxSet(StellarMessage const& msg);
-    void recvGeneralizedTxSet(StellarMessage const& msg);
     void recvTransaction(CapacityTrackedMessage const& msgTracker);
 #ifdef BUILD_TESTS
     void recvTxBatch(CapacityTrackedMessage const& msgTracker);
@@ -352,7 +350,6 @@ class Peer : public std::enable_shared_from_this<Peer>,
     void cancelTimers();
 
     std::string msgSummary(StellarMessage const& stellarMsg);
-    void sendGetTxSet(uint256 const& setID);
     void sendGetQuorumSet(uint256 const& setID);
     void sendGetScpState(uint32 ledgerSeq);
     void sendErrorAndDrop(ErrorCode error, std::string const& message);

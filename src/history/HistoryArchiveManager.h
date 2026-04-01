@@ -54,6 +54,11 @@ class HistoryArchiveManager
     std::vector<std::shared_ptr<HistoryArchive>>
     getWritableHistoryArchives() const;
 
+    // Returns all readable history archives (those configured with a `get` and
+    // no `put` command).
+    std::vector<std::shared_ptr<HistoryArchive>>
+    getReadOnlyHistoryArchives() const;
+
   private:
     Application& mApp;
     std::vector<std::shared_ptr<HistoryArchive>> mArchives;

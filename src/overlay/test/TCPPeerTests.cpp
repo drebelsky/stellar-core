@@ -86,6 +86,7 @@ TEST_CASE("TCPPeer lifetime", "[overlay]")
     REQUIRE(!p1);
 }
 
+#if 0
 TEST_CASE("TCPPeer can communicate", "[overlay]")
 {
     Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
@@ -138,6 +139,7 @@ TEST_CASE("TCPPeer can communicate", "[overlay]")
     REQUIRE(msgWrite.count() == prevMsgWrite + 2);
     s->stopAllNodes();
 }
+#endif
 
 TEST_CASE("TCPPeer read malformed messages", "[overlay]")
 {

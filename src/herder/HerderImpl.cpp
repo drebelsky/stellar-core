@@ -18,6 +18,7 @@
 #include "herder/RustQuorumCheckerAdaptor.h"
 #include "herder/TxSetFrame.h"
 #include "herder/TxSetUtils.h"
+#include "history/HistoryArchiveManager.h"
 #include "ledger/LedgerManager.h"
 #include "ledger/LedgerTxnImpl.h"
 #include "ledger/P23HotArchiveBug.h"
@@ -30,6 +31,7 @@
 #include "medida/meter.h"
 #include "overlay/OverlayManager.h"
 #include "process/ProcessManager.h"
+#include "process/ProcessManagerImpl.h"
 #include "scp/LocalNode.h"
 #include "scp/Slot.h"
 #include "transactions/MutableTransactionResult.h"
@@ -1330,13 +1332,6 @@ HerderImpl::recvSCPQuorumSet(Hash const& hash, SCPQuorumSet const& qset)
     return mPendingEnvelopes.recvSCPQuorumSet(hash, qset);
 }
 
-bool
-HerderImpl::recvTxSet(Hash const& hash, TxSetXDRFrameConstPtr txset)
-{
-    ZoneScoped;
-    return mPendingEnvelopes.recvTxSet(hash, txset);
-}
-
 void
 HerderImpl::peerDoesntHave(MessageType type, uint256 const& itemID,
                            Peer::pointer peer)
@@ -1545,6 +1540,43 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     // if we happen to build a txset that we were trying to download.
     mPendingEnvelopes.addTxSet(txSetHash, lcl.header.ledgerSeq + 1,
                                proposedSet);
+
+    // upload the proposedSet to the archive; we do this synchronously to
+    // simplify the callback logic and decrease delays caused by work scheduling
+    auto start = std::chrono::steady_clock::now();
+    {
+        // Write local file
+        TmpDir dir{mApp.getTmpDirManager().tmpDir("txset")};
+        FileTransferInfo info{dir, FileType::HISTORY_FILE_TYPE_TXSET,
+                              binToHex(txSetHash)};
+        XDROutputFileStream out{mApp.getClock().getIOContext(), true};
+        out.open(info.localPath_nogz());
+        StoredTransactionSet xdrTxSet;
+        proposedSet->storeXDR(xdrTxSet);
+        out.writeOne(xdrTxSet);
+        out.close();
+
+        // gzip the file
+        std::string cmd = "gzip " + info.localPath_nogz();
+        releaseAssert(runSync(cmd) == 0);
+
+        // Upload to archives
+        auto writableArchives =
+            mApp.getHistoryArchiveManager().getWritableHistoryArchives();
+        // For the prototype, we expect to have exactly one writable archive
+        releaseAssert(writableArchives.size() == 1);
+        auto& archive = *writableArchives[0];
+        // mkdir
+        releaseAssert(runSync(archive.mkdirCmd(info.remoteDir())) == 0);
+        // put
+        releaseAssert(runSync(archive.putFileCmd(info.localPath_gz(),
+                                                 info.remoteName())) == 0);
+    }
+    auto end = std::chrono::steady_clock::now();
+    CLOG_DEBUG(
+        Herder, "Uploading proposed txset took {} ms",
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+            .count());
 
     lcl = mLedgerManager.getLastClosedLedgerHeader();
     // use the slot index from ledger manager here as our vote is based off

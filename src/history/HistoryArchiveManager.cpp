@@ -268,4 +268,16 @@ HistoryArchiveManager::getWritableHistoryArchives() const
                  });
     return result;
 }
+
+std::vector<std::shared_ptr<HistoryArchive>>
+HistoryArchiveManager::getReadOnlyHistoryArchives() const
+{
+    auto result = std::vector<std::shared_ptr<HistoryArchive>>{};
+    std::copy_if(std::begin(mArchives), std::end(mArchives),
+                 std::back_inserter(result),
+                 [](std::shared_ptr<HistoryArchive> const& x) {
+                     return x->hasGetCmd() && !x->hasPutCmd();
+                 });
+    return result;
+}
 }

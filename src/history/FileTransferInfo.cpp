@@ -55,6 +55,8 @@ typeString(FileType type)
         return "results";
     case FileType::HISTORY_FILE_TYPE_SCP:
         return "scp";
+    case FileType::HISTORY_FILE_TYPE_TXSET:
+        return "txset";
     }
 }
 

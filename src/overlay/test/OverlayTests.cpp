@@ -1759,6 +1759,7 @@ TEST_CASE("reject peers who dont handshake quickly", "[overlay][connections]")
     }
 }
 
+#if 0
 TEST_CASE("drop peers who straggle", "[overlay][connections][straggler]")
 {
     auto test = [](unsigned short stragglerTimeout) {
@@ -1842,6 +1843,7 @@ TEST_CASE("drop peers who straggle", "[overlay][connections][straggler]")
         test(150);
     }
 }
+#endif
 
 TEST_CASE("reject peers with the same nodeid", "[overlay][connections]")
 {

@@ -63,4 +63,6 @@ class ProcessManagerImpl : public ProcessManager
 
     ~ProcessManagerImpl() override;
 };
+
+int runSync(std::string_view cmdLine);
 }

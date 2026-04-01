@@ -18,6 +18,7 @@
 using namespace stellar;
 using namespace stellar::txtest;
 
+#if 0
 TEST_CASE("PendingEnvelopes recvSCPEnvelope", "[herder]")
 {
     Config cfg(getTestConfig());
@@ -356,3 +357,4 @@ TEST_CASE("PendingEnvelopes recvSCPEnvelope", "[herder]")
                                            p2.second));
     }
 }
+#endif

@@ -642,19 +642,6 @@ Peer::sendSCPQuorumSet(SCPQuorumSetPtr qSet)
 }
 
 void
-Peer::sendGetTxSet(uint256 const& setID)
-{
-    ZoneScoped;
-    releaseAssert(threadIsMain());
-    StellarMessage newMsg;
-    newMsg.type(GET_TX_SET);
-    newMsg.txSetHash() = setID;
-
-    auto msgPtr = std::make_shared<StellarMessage const>(newMsg);
-    sendMessage(msgPtr);
-}
-
-void
 Peer::sendGetQuorumSet(uint256 const& setID)
 {
     ZoneScoped;
@@ -1261,6 +1248,16 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case DONT_HAVE:
     {
+        if (stellarMsg.dontHave().type == TX_SET ||
+            stellarMsg.dontHave().type == GENERALIZED_TX_SET)
+        {
+            const char* typeStr = xdr::xdr_traits<MessageType>::enum_name(
+                stellarMsg.dontHave().type);
+            CLOG_FATAL(Overlay, "Received DONT_HAVE from {} for {}. Peer: {}",
+                       toString(), typeStr ? typeStr : "UNKNOWN",
+                       mAppConnector.getConfig().toShortString(mPeerID));
+            releaseAssert(false);
+        }
         auto t = mOverlayMetrics.mRecvDontHaveTimer.TimeScope();
         recvDontHave(stellarMsg);
     }
@@ -1303,6 +1300,9 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
 
     case GET_TX_SET:
     {
+        CLOG_FATAL(Overlay, "Received GET_TX_SET from {}. Peer: {}", toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
         auto t = mOverlayMetrics.mRecvGetTxSetTimer.TimeScope();
         recvGetTxSet(stellarMsg);
     }
@@ -1319,16 +1319,21 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
         else
 #endif
         {
+            CLOG_FATAL(Overlay, "Received TX_SET from {}. Peer: {}", toString(),
+                       mAppConnector.getConfig().toShortString(mPeerID));
+            releaseAssert(false);
             auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
-            recvTxSet(stellarMsg);
         }
     }
     break;
 
     case GENERALIZED_TX_SET:
     {
+        CLOG_FATAL(Overlay, "Received GENERALIZED_TX_SET from {}. Peer: {}",
+                   toString(),
+                   mAppConnector.getConfig().toShortString(mPeerID));
+        releaseAssert(false);
         auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
-        recvGeneralizedTxSet(stellarMsg);
     }
     break;
 
@@ -1490,24 +1495,6 @@ Peer::recvGetTxSet(StellarMessage const& msg)
     }
 
     mTxSetQueryInfo.mNumQueries++;
-}
-
-void
-Peer::recvTxSet(StellarMessage const& msg)
-{
-    ZoneScoped;
-    releaseAssert(threadIsMain());
-    auto frame = TxSetXDRFrame::makeFromWire(msg.txSet());
-    mAppConnector.getHerder().recvTxSet(frame->getContentsHash(), frame);
-}
-
-void
-Peer::recvGeneralizedTxSet(StellarMessage const& msg)
-{
-    ZoneScoped;
-    releaseAssert(threadIsMain());
-    auto frame = TxSetXDRFrame::makeFromWire(msg.generalizedTxSet());
-    mAppConnector.getHerder().recvTxSet(frame->getContentsHash(), frame);
 }
 
 void

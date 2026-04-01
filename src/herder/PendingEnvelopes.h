@@ -62,7 +62,6 @@ class PendingEnvelopes
     // weak references to all known qsets
     UnorderedMap<Hash, std::weak_ptr<SCPQuorumSet>> mKnownQSets;
 
-    ItemFetcher mTxSetFetcher;
     ItemFetcher mQuorumSetFetcher;
 
     using TxSetFramCacheItem = std::pair<uint64, TxSetXDRFrameConstPtr>;
@@ -173,15 +172,6 @@ class PendingEnvelopes
     */
     TxSetXDRFrameConstPtr putTxSet(Hash const& hash, uint64 slot,
                                    TxSetXDRFrameConstPtr txset);
-
-    /**
-     * Check if @p txset identified by @p hash was requested before from peers.
-     * If not, ignores that @p txset. If it was requested, calls
-     * @see addTxSet.
-     *
-     * Return true if TxSet useful (was asked for).
-     */
-    bool recvTxSet(Hash const& hash, TxSetXDRFrameConstPtr txset);
 
     void peerDoesntHave(MessageType type, Hash const& itemID,
                         Peer::pointer peer);

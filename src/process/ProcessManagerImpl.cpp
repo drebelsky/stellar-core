@@ -948,4 +948,74 @@ ProcessExitEvent::async_wait(
     std::function<void(asio::error_code)> h(handler);
     mTimer->async_wait([ec, h](asio::error_code) { h(*ec); });
 }
+
+static std::vector<std::string>
+split(std::string_view s)
+{
+    std::vector<std::string> parts;
+    std::regex ws_re("\\s+");
+    std::copy(std::cregex_token_iterator(s.begin(), s.end(), ws_re, -1),
+              std::cregex_token_iterator(), std::back_inserter(parts));
+    return parts;
+}
+
+int
+runSync(std::string_view cmdLine)
+{
+    ZoneScoped;
+
+    std::vector<std::string> args = split(cmdLine);
+    std::vector<char*> argv;
+    for (auto& a : args)
+    {
+        argv.push_back((char*)a.data());
+    }
+    argv.push_back(nullptr);
+    int err = 0;
+
+    PosixSpawnFileActions fileActions;
+    // Iterate through all possibly open file descriptors except stdin, stdout,
+    // and stderr and set FD_CLOEXEC so the subprocess doesn't inherit them
+    int const maxFds = sysconf(_SC_OPEN_MAX);
+    // as the space of open file descriptors is arbitrary large
+    // we use as a heuristic the number of consecutive unused descriptors
+    // as an indication that we're past the range where descriptors are
+    // allocated
+    // a better way would be to enumerate the opened descriptors, but there
+    // doesn't seem to be a portable way to do this
+    int const maxGAP = 512;
+    for (int fd = 3, lastFd = 3; (fd < maxFds) && ((fd - lastFd) < maxGAP);
+         ++fd)
+    {
+        int flags = fcntl(fd, F_GETFD);
+        if (flags != -1)
+        {
+            // set if it was not already set
+            if ((flags & FD_CLOEXEC) == 0)
+            {
+                fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+            }
+            lastFd = fd;
+        }
+    }
+    int pid;
+    err = posix_spawnp(&pid, argv[0], fileActions,
+                       nullptr, // posix_spawnattr_t*
+                       argv.data(), environ);
+    if (err)
+    {
+        CLOG_ERROR(Process, "posix_spawn() failed: {}", strerror(err));
+        throw std::runtime_error("posix_spawn() failed");
+    }
+
+    int status;
+    pid_t res;
+    do
+    {
+        res = waitpid(pid, &status, 0);
+    } while (res == -1 && errno == EINTR);
+    releaseAssert(res == pid);
+    releaseAssert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
 }
