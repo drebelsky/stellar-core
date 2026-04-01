@@ -1556,10 +1556,6 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
         out.writeOne(xdrTxSet);
         out.close();
 
-        // gzip the file
-        std::string cmd = "gzip " + info.localPath_nogz();
-        releaseAssert(runSync(cmd) == 0);
-
         // Upload to archives
         auto writableArchives =
             mApp.getHistoryArchiveManager().getWritableHistoryArchives();
@@ -1569,7 +1565,7 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
         // mkdir
         releaseAssert(runSync(archive.mkdirCmd(info.remoteDir())) == 0);
         // put
-        releaseAssert(runSync(archive.putFileCmd(info.localPath_gz(),
+        releaseAssert(runSync(archive.putFileCmd(info.localPath_nogz(),
                                                  info.remoteName())) == 0);
     }
     auto end = std::chrono::steady_clock::now();

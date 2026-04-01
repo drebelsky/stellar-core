@@ -612,9 +612,8 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
                                       hash};
                 releaseAssert(
                     runSync(archive->getFileCmd(info.remoteName(),
-                                                info.localPath_gz())) == 0);
-                releaseAssert(fs::exists(info.localPath_gz()));
-                releaseAssert(runSync("gzip -d " + info.localPath_gz()) == 0);
+                                                info.localPath_nogz())) == 0);
+                releaseAssert(fs::exists(info.localPath_nogz()));
 
                 XDRInputFileStream in;
                 in.open(info.localPath_nogz());
@@ -661,13 +660,11 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
                     FileTransferInfo info{
                         dir, FileType::HISTORY_FILE_TYPE_TXSET, hash};
                     if (runSync(archive.getFileCmd(info.remoteName(),
-                                                   info.localPath_gz())) == 0)
+                                                   info.localPath_nogz())) == 0)
                     {
                         continue;
                     }
-                    releaseAssert(fs::exists(info.localPath_gz()));
-                    releaseAssert(runSync("gzip -d " + info.localPath_gz()) ==
-                                  0);
+                    releaseAssert(fs::exists(info.localPath_nogz()));
 
                     XDRInputFileStream in;
                     in.open(info.localPath_nogz());
