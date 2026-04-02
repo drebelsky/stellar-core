@@ -1573,8 +1573,8 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
                                                  info.remoteName())) == 0);
     }
     auto end = std::chrono::steady_clock::now();
-    CLOG_DEBUG(
-        Herder, "Uploading proposed txset took {} ms",
+    CLOG_FATAL(
+        Herder, "Uploading proposed txset {} took {} ms", binToHex(txSetHash),
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
             .count());
 

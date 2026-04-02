@@ -597,6 +597,7 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
     {
         if (!getKnownTxSet(sv.txSetHash, 0, false))
         {
+            auto start = mApp.getClock().now();
             releaseAssert(sv.ext.v() == STELLAR_VALUE_SIGNED);
             if (!dir)
             {
@@ -629,6 +630,12 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
 
             addTxSet(sv.txSetHash, envelope.statement.slotIndex,
                      TxSetXDRFrame::makeFromStoredTxSet(txSet));
+            auto duration = mApp.getClock().now() - start;
+            CLOG_FATAL(
+                Herder, "Fetched TxSet {} for envelope {} in {} ms",
+                binToHex(sv.txSetHash), hexAbbrev(xdrSha256(envelope)),
+                std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+                    .count());
         }
     }
 
