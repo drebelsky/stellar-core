@@ -580,108 +580,55 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
     // testing is done on a 3-node network, but this should be
     // revisted for larger networks.
 
-    if (envelope.statement.pledges.type() == SCP_ST_NOMINATE)
+    // inline getValidatedTxSetHashes so we can access the nodeIDs that sent the
+    // envelope
+    auto maybeValues = getStellarValues(envelope.statement);
+    if (!maybeValues.has_value())
     {
-        std::shared_ptr<HistoryArchive> archive;
-        std::unique_ptr<TmpDir> dir;
-        for (auto const& h2 : getValidatedTxSetHashes(envelope))
-        {
-            if (!getKnownTxSet(h2, 0, false))
-            {
-                if (!archive)
-                {
-                    std::string nodeName =
-                        KeyUtils::toStrKey(envelope.statement.nodeID);
-                    if (auto iter =
-                            mApp.getConfig().VALIDATOR_NAMES.find(nodeName);
-                        iter != mApp.getConfig().VALIDATOR_NAMES.end())
-                    {
-                        nodeName = iter->second;
-                    }
-                    archive = mApp.getHistoryArchiveManager().getHistoryArchive(
-                        nodeName);
-                    // TODO: we can probably loosen this requirement in the
-                    // future
-                    releaseAssert(archive);
-
-                    dir = std::make_unique<TmpDir>("fetch-txset");
-                }
-
-                auto hash = binToHex(h2);
-                FileTransferInfo info{*dir, FileType::HISTORY_FILE_TYPE_TXSET,
-                                      hash};
-                releaseAssert(
-                    runSync(archive->getFileCmd(info.remoteName(),
-                                                info.localPath_gz())) == 0);
-                releaseAssert(fs::exists(info.localPath_gz()));
-                releaseAssert(runSync("gzip -d " + info.localPath_gz()) == 0);
-
-                XDRInputFileStream in;
-                in.open(info.localPath_nogz());
-                StoredTransactionSet txSet;
-                releaseAssert(in.readOne(txSet));
-                in.close();
-
-                addTxSet(h2, envelope.statement.slotIndex,
-                         TxSetXDRFrame::makeFromStoredTxSet(txSet));
-            }
-        }
+        SCPStatement const& st = envelope.statement;
+        throw std::runtime_error(
+            fmt::format("SCPEnvelope from node {} for slot {} contains invalid "
+                        "StellarValues",
+                        KeyUtils::toStrKey(st.nodeID), st.slotIndex));
     }
-    else
+
+    std::unique_ptr<TmpDir> dir;
+    for (auto const& sv : maybeValues.value())
     {
-        std::vector<TmpDir> dirs;
-        std::vector<std::shared_ptr<HistoryArchive>> archives;
-        for (auto const& h2 : getValidatedTxSetHashes(envelope))
+        if (!getKnownTxSet(sv.txSetHash, 0, false))
         {
-            if (!getKnownTxSet(h2, 0, false))
+            releaseAssert(sv.ext.v() == STELLAR_VALUE_SIGNED);
+            if (!dir)
             {
-                if (archives.empty())
-                {
-                    archives = mApp.getHistoryArchiveManager()
-                                   .getReadOnlyHistoryArchives();
-                    releaseAssert(!archives.empty());
-                    CLOG_WARNING(Herder,
-                                 "Missing txset {} for envelope of type {}",
-                                 binToHex(h),
-                                 xdr::xdr_traits<SCPStatementType>::enum_name(
-                                     envelope.statement.pledges.type()));
-
-                    for (size_t i = 0; i < archives.size(); i++)
-                    {
-                        dirs.emplace_back(std::string{"fetch-txset"});
-                    }
-                }
-
-                auto hash = binToHex(h2);
-                bool success = false;
-                for (size_t i = 0; i < archives.size(); i++)
-                {
-                    auto& dir = dirs[i];
-                    auto& archive = *archives[i];
-                    FileTransferInfo info{
-                        dir, FileType::HISTORY_FILE_TYPE_TXSET, hash};
-                    if (runSync(archive.getFileCmd(info.remoteName(),
-                                                   info.localPath_gz())) == 0)
-                    {
-                        continue;
-                    }
-                    releaseAssert(fs::exists(info.localPath_gz()));
-                    releaseAssert(runSync("gzip -d " + info.localPath_gz()) ==
-                                  0);
-
-                    XDRInputFileStream in;
-                    in.open(info.localPath_nogz());
-                    StoredTransactionSet txSet;
-                    releaseAssert(in.readOne(txSet));
-                    in.close();
-
-                    addTxSet(h2, envelope.statement.slotIndex,
-                             TxSetXDRFrame::makeFromStoredTxSet(txSet));
-                    success = true;
-                    break;
-                }
-                releaseAssert(success);
+                dir = std::make_unique<TmpDir>("fetch-txset");
             }
+            std::string nodeName =
+                KeyUtils::toStrKey(sv.ext.lcValueSignature().nodeID);
+            if (auto iter = mApp.getConfig().VALIDATOR_NAMES.find(nodeName);
+                iter != mApp.getConfig().VALIDATOR_NAMES.end())
+            {
+                nodeName = iter->second;
+            }
+            auto archive =
+                mApp.getHistoryArchiveManager().getHistoryArchive(nodeName);
+
+            auto hash = binToHex(sv.txSetHash);
+            FileTransferInfo info{*dir, FileType::HISTORY_FILE_TYPE_TXSET,
+                                  hash};
+            releaseAssert(runSync(archive->getFileCmd(
+                              info.remoteName(), info.localPath_gz())) == 0);
+            releaseAssert(fs::exists(info.localPath_gz()));
+            releaseAssert(runSync("gzip -d " + info.localPath_gz()) == 0);
+
+            // In the prototype, we assume that this hash matches
+            XDRInputFileStream in;
+            in.open(info.localPath_nogz());
+            StoredTransactionSet txSet;
+            releaseAssert(in.readOne(txSet));
+            in.close();
+
+            addTxSet(sv.txSetHash, envelope.statement.slotIndex,
+                     TxSetXDRFrame::makeFromStoredTxSet(txSet));
         }
     }
 
