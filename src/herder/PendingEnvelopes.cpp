@@ -616,39 +616,33 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
             auto hash = binToHex(sv.txSetHash);
             FileTransferInfo info{*dir, FileType::HISTORY_FILE_TYPE_TXSET,
                                   hash};
+
+#define FAIL(explanation, args) \
+    do \
+    { \
+        CLOG_FATAL(Herder, \
+                   "Failed to fetch TxSet {} for envelope {} from archive " \
+                   "{} " explanation, \
+                   binToHex(sv.txSetHash), \
+                   binToHex(xdr::xdr_to_opaque(envelope)), nodeName, args); \
+        releaseAssert(false); \
+    } while (0)
+
             if (runSync(archive->getFileCmd(info.remoteName(),
                                             info.localPath_gz())) != 0)
             {
-                CLOG_FATAL(
-                    Herder,
-                    "Failed to fetch TxSet {} for envelope {} from archive "
-                    "{} with command: {}",
-                    binToHex(sv.txSetHash), binToHex(xdrSha256(envelope)),
-                    nodeName,
-                    archive->getFileCmd(info.remoteName(),
-                                        info.localPath_gz()));
-                releaseAssert(false);
+                FAIL("command: {}", archive->getFileCmd(info.remoteName(),
+                                                        info.localPath_gz()));
             }
             if (!fs::exists(info.localPath_gz()))
             {
-                CLOG_FATAL(Herder,
-                           "Failed to fetch TxSet {} for envelope {} from "
-                           "archive {}, file does not exist: {}",
-                           binToHex(sv.txSetHash),
-                           binToHex(xdrSha256(envelope)), nodeName,
-                           info.localPath_gz());
-                releaseAssert(false);
+                FAIL("file ({}) does not exist after fetch", info.localPath_gz());
             }
             if (runSync("gzip -d " + info.localPath_gz()) != 0)
             {
-                CLOG_FATAL(Herder,
-                           "Failed to decompress TxSet {} for envelope {} "
-                           "from archive {}, command: {}",
-                           binToHex(sv.txSetHash),
-                           binToHex(xdrSha256(envelope)), nodeName,
-                           "gzip -d " + info.localPath_gz());
-                releaseAssert(false);
+                FAIL("failed to unzip file {}", info.localPath_gz());
             }
+#undef FAIL
 
             // In the prototype, we assume that this hash matches
             XDRInputFileStream in;
