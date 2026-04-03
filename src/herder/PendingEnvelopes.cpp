@@ -616,10 +616,39 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
             auto hash = binToHex(sv.txSetHash);
             FileTransferInfo info{*dir, FileType::HISTORY_FILE_TYPE_TXSET,
                                   hash};
-            releaseAssert(runSync(archive->getFileCmd(
-                              info.remoteName(), info.localPath_gz())) == 0);
-            releaseAssert(fs::exists(info.localPath_gz()));
-            releaseAssert(runSync("gzip -d " + info.localPath_gz()) == 0);
+            if (runSync(archive->getFileCmd(info.remoteName(),
+                                            info.localPath_gz())) != 0)
+            {
+                CLOG_FATAL(
+                    Herder,
+                    "Failed to fetch TxSet {} for envelope {} from archive "
+                    "{} with command: {}",
+                    binToHex(sv.txSetHash), binToHex(xdrSha256(envelope)),
+                    nodeName,
+                    archive->getFileCmd(info.remoteName(),
+                                        info.localPath_gz()));
+                releaseAssert(false);
+            }
+            if (!fs::exists(info.localPath_gz()))
+            {
+                CLOG_FATAL(Herder,
+                           "Failed to fetch TxSet {} for envelope {} from "
+                           "archive {}, file does not exist: {}",
+                           binToHex(sv.txSetHash),
+                           binToHex(xdrSha256(envelope)), nodeName,
+                           info.localPath_gz());
+                releaseAssert(false);
+            }
+            if (runSync("gzip -d " + info.localPath_gz()) != 0)
+            {
+                CLOG_FATAL(Herder,
+                           "Failed to decompress TxSet {} for envelope {} "
+                           "from archive {}, command: {}",
+                           binToHex(sv.txSetHash),
+                           binToHex(xdrSha256(envelope)), nodeName,
+                           "gzip -d " + info.localPath_gz());
+                releaseAssert(false);
+            }
 
             // In the prototype, we assume that this hash matches
             XDRInputFileStream in;
