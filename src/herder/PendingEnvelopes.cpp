@@ -560,6 +560,35 @@ PendingEnvelopes::isFullyFetched(SCPEnvelope const& envelope)
                        });
 }
 
+namespace
+{
+template <std::size_t N> struct FixedString
+{
+    char buf[N + 6]{};
+    constexpr FixedString(const char (&str)[N])
+    {
+        std::copy_n("GREP: ", 6, buf);
+        std::copy_n(str, N, buf + 6);
+    }
+};
+
+template <FixedString Fmt> class Timer
+{
+    std::chrono::steady_clock::time_point mStart;
+
+  public:
+    Timer() : mStart{std::chrono::steady_clock::now()}
+    {
+    }
+    ~Timer()
+    {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - mStart);
+        CLOG_FATAL(Herder, Fmt.buf, ms);
+    };
+};
+} // namespace
+
 void
 PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
 {
@@ -628,19 +657,27 @@ PendingEnvelopes::startFetch(SCPEnvelope const& envelope)
         releaseAssert(false); \
     } while (0)
 
-            if (runSync(archive->getFileCmd(info.remoteName(),
-                                            info.localPath_gz())) != 0)
             {
-                FAIL("command: {}", archive->getFileCmd(info.remoteName(),
-                                                        info.localPath_gz()));
+                Timer<"archive->getFileCmd() took {} ms"> timer;
+                if (runSync(archive->getFileCmd(info.remoteName(),
+                                                info.localPath_gz())) != 0)
+                {
+                    FAIL("command: {}",
+                         archive->getFileCmd(info.remoteName(),
+                                             info.localPath_gz()));
+                }
             }
             if (!fs::exists(info.localPath_gz()))
             {
-                FAIL("file ({}) does not exist after fetch", info.localPath_gz());
+                FAIL("file ({}) does not exist after fetch",
+                     info.localPath_gz());
             }
-            if (runSync("gzip -d " + info.localPath_gz()) != 0)
             {
-                FAIL("failed to unzip file {}", info.localPath_gz());
+                Timer<"gzip -d took {} ms"> timer;
+                if (runSync("gzip -d " + info.localPath_gz()) != 0)
+                {
+                    FAIL("failed to unzip file {}", info.localPath_gz());
+                }
             }
 #undef FAIL
 
