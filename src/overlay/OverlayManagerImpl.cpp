@@ -321,6 +321,7 @@ OverlayManagerImpl::OverlayManagerImpl(Application& app)
                     mSurveyManager)
     , mOutboundPeers(*this, mApp.getMetrics(), "outbound", "cancel",
                      mApp.getConfig().TARGET_PEER_CONNECTIONS, mSurveyManager)
+    , mCompressionContext(mApp.getConfig().COMPRESSION_LEVEL)
     , mResolvingPeersWithBackoff(true)
     , mResolvingPeersRetryCount(0)
     , mScheduledMessages(100000)
@@ -1444,6 +1445,93 @@ OverlayManagerImpl::getOverlayThreadSnapshot()
                                      .copySearchableLiveBucketListSnapshot();
     }
     return mOverlayThreadSnapshot;
+}
+
+xdr::opaque_vec<>
+OverlayManagerImpl::compressMessage(StellarMessage const& msg)
+{
+    // sanity check that the choice to hold context in the manager is
+    // appropriate
+    if (!mCompressionThreadId.has_value())
+    {
+        mCompressionThreadId = std::this_thread::get_id();
+    }
+    else
+    {
+        releaseAssert(std::this_thread::get_id() == *mCompressionThreadId);
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    auto compressed = mCompressionContext.compress(msg);
+    auto end = std::chrono::steady_clock::now();
+    auto& metrics = mOverlayMetrics;
+    switch (msg.type())
+    {
+    case TRANSACTION:
+        metrics.mCompressTransactionTimer.Update(end - start);
+        metrics.mSendCompressedSizeTransaction.inc(compressed.size());
+        metrics.mSendUncompressedSizeTransaction.inc(xdr::xdr_size(msg));
+        break;
+    case TX_SET:
+        metrics.mCompressTxSetTimer.Update(end - start);
+        metrics.mSendCompressedSizeTxSet.inc(compressed.size());
+        metrics.mSendUncompressedSizeTxSet.inc(xdr::xdr_size(msg));
+        break;
+    case GENERALIZED_TX_SET:
+        metrics.mCompressGeneralizedTxSetTimer.Update(end - start);
+        metrics.mSendCompressedSizeGeneralizedTxSet.inc(compressed.size());
+        metrics.mSendUncompressedSizeGeneralizedTxSet.inc(xdr::xdr_size(msg));
+        break;
+    default:
+        releaseAssert(false);
+    }
+
+    return compressed;
+}
+
+StellarMessage
+OverlayManagerImpl::decompressMessage(xdr::opaque_vec<> const& compressed)
+{
+    // sanity check that the choice to hold context in the manager is
+    // appropriate
+    if (!mDecompressionThreadId.has_value())
+    {
+        mDecompressionThreadId = std::this_thread::get_id();
+    }
+    else
+    {
+        releaseAssert(std::this_thread::get_id() == *mDecompressionThreadId);
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    auto message = mDecompressionContext.decompress<StellarMessage>(compressed);
+    auto end = std::chrono::steady_clock::now();
+    switch (message.type())
+    {
+    case TRANSACTION:
+        mOverlayMetrics.mDecompressTransactionTimer.Update(end - start);
+        mOverlayMetrics.mRecvCompressedSizeTransaction.inc(compressed.size());
+        mOverlayMetrics.mRecvDecompressedSizeTransaction.inc(
+            xdr::xdr_size(message));
+        break;
+    case TX_SET:
+        mOverlayMetrics.mDecompressTxSetTimer.Update(end - start);
+        mOverlayMetrics.mRecvCompressedSizeTxSet.inc(compressed.size());
+        mOverlayMetrics.mRecvDecompressedSizeTxSet.inc(xdr::xdr_size(message));
+        break;
+    case GENERALIZED_TX_SET:
+        mOverlayMetrics.mDecompressGeneralizedTxSetTimer.Update(end - start);
+        mOverlayMetrics.mRecvCompressedSizeGeneralizedTxSet.inc(
+            compressed.size());
+        mOverlayMetrics.mRecvDecompressedSizeGeneralizedTxSet.inc(
+            xdr::xdr_size(message));
+        break;
+    default:
+        CLOG_FATAL(Overlay, "Received unexpected compressed message of type {}",
+                   xdr::xdr_traits<MessageType>::enum_name(message.type()));
+        releaseAssert(false);
+    }
+    return message;
 }
 
 }

@@ -20,14 +20,106 @@
 #include "util/RandomEvictionCache.h"
 
 #include <future>
+#include <memory>
+#include <optional>
 #include <set>
+#include <thread>
 #include <vector>
+#include <zstd.h>
 
 namespace medida
 {
 class Meter;
 class Counter;
 }
+
+// In the current version, we only ever compress and decompress StellarMessage
+// objects, but we leave the interface open in case we want to compress at a
+// different level of abstraction in the future.
+template <typename T>
+concept IsXdrSerializable = xdr::xdr_traits<T>::valid;
+
+class CompressionContext
+{
+    ZSTD_CCtx* mCtx;
+    int mCompressionLevel;
+
+  public:
+    CompressionContext(int compressionLevel)
+        : mCtx(ZSTD_createCCtx()), mCompressionLevel(compressionLevel)
+    {
+        releaseAssert(mCtx != nullptr);
+    }
+
+    CompressionContext(CompressionContext const& other) = delete;
+    CompressionContext& operator=(CompressionContext const& other) = delete;
+
+    ~CompressionContext()
+    {
+        releaseAssert(ZSTD_freeCCtx(mCtx) == 0);
+    }
+
+    template <IsXdrSerializable T>
+    xdr::opaque_vec<>
+    compress(T const& obj)
+    {
+        ZoneScopedN("CompressionContext::compress");
+        xdr::opaque_vec<> bytes = xdr::xdr_to_opaque(obj);
+        size_t maxCompressedSize = ZSTD_compressBound(bytes.size());
+        xdr::opaque_vec<> compressed(maxCompressedSize);
+        size_t compressedSize =
+            ZSTD_compressCCtx(mCtx, compressed.data(), compressed.size(),
+                              bytes.data(), bytes.size(), mCompressionLevel);
+        releaseAssert(!ZSTD_isError(compressedSize));
+        compressed.resize(compressedSize);
+        return compressed;
+    }
+};
+
+class DecompressionContext
+{
+    ZSTD_DCtx* mCtx;
+
+  public:
+    DecompressionContext() : mCtx(ZSTD_createDCtx())
+    {
+        releaseAssert(mCtx != nullptr);
+    }
+
+    DecompressionContext(DecompressionContext const& other) = delete;
+    DecompressionContext& operator=(DecompressionContext const& other) = delete;
+
+    ~DecompressionContext()
+    {
+        releaseAssert(ZSTD_freeDCtx(mCtx) == 0);
+    }
+
+    template <IsXdrSerializable T>
+    T
+    decompress(xdr::opaque_vec<> const& compressed)
+    {
+        ZoneScopedN("DecompressionContext::decompress");
+        unsigned long long decompressedSize =
+            ZSTD_getFrameContentSize(compressed.data(), compressed.size());
+        releaseAssert(decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
+                      decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN);
+
+        auto decompressedData =
+            std::make_unique_for_overwrite<char[]>(decompressedSize);
+        size_t result =
+            ZSTD_decompressDCtx(mCtx, decompressedData.get(), decompressedSize,
+                                compressed.data(), compressed.size());
+        releaseAssert(!ZSTD_isError(result));
+        releaseAssert(result == decompressedSize);
+
+        xdr::xdr_get g{decompressedData.get(),
+                       decompressedData.get() + decompressedSize};
+        T obj;
+        xdr_argpack_archive(g, obj);
+        g.done();
+        return obj;
+    }
+};
 
 /*
 Maintain the set of peers we are connected to
@@ -169,7 +261,14 @@ class OverlayManagerImpl : public OverlayManager
 
     SearchableSnapshotConstPtr& getOverlayThreadSnapshot() override;
 
+    xdr::opaque_vec<> compressMessage(StellarMessage const& msg);
+    StellarMessage decompressMessage(xdr::opaque_vec<> const& compressed);
+
   private:
+    std::optional<std::thread::id> mCompressionThreadId;
+    CompressionContext mCompressionContext;
+    std::optional<std::thread::id> mDecompressionThreadId;
+    DecompressionContext mDecompressionContext;
     struct ResolvedPeers
     {
         std::vector<PeerBareAddress> known;

@@ -17,9 +17,11 @@
 #include "util/Timer.h"
 #include "xdrpp/message.h"
 #include <medida/counter.h>
+#include <memory>
 
 namespace stellar
 {
+class OverlayManagerImpl;
 
 typedef std::shared_ptr<SCPQuorumSet> SCPQuorumSetPtr;
 
@@ -257,6 +259,10 @@ class Peer : public std::enable_shared_from_this<Peer>,
     // IOW, all methods using these private variables and functions below must
     // synchronize access manually
   private:
+    // This is only for the prototype so that we can do the
+    // compression/decompression off the main thread (appConnector requires main
+    // thread access)
+    OverlayManagerImpl& mOverlayManager;
     PeerState mState GUARDED_BY(mStateMutex);
     NodeID mPeerID;
     uint256 mSendNonce;

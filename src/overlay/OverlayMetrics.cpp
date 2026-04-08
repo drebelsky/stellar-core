@@ -49,6 +49,44 @@ OverlayMetrics::OverlayMetrics(Application& app)
     , mRecvTxSetTimer(app.getMetrics().NewTimer({"overlay", "recv", "txset"}))
     , mRecvTransactionTimer(app.getMetrics().NewSimpleTimer(
           {"overlay", "recv-transaction", ""}, std::chrono::microseconds{1}))
+    , mCompressTransactionTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "compress", "tx-"}, std::chrono::microseconds{1}))
+    , mCompressTxSetTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "compress", "txset-"}, std::chrono::microseconds{1}))
+    , mCompressGeneralizedTxSetTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "compress", "generalized-txset-"},
+          std::chrono::microseconds{1}))
+    , mDecompressTransactionTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "decompress", "tx-"}, std::chrono::microseconds{1}))
+    , mDecompressTxSetTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "decompress", "txset-"}, std::chrono::microseconds{1}))
+    , mDecompressGeneralizedTxSetTimer(app.getMetrics().NewSimpleTimer(
+          {"overlay", "decompress", "generalized-txset-"},
+          std::chrono::microseconds{1}))
+    , mRecvDecompressedSizeTransaction(app.getMetrics().NewCounter(
+          {"overlay", "recv", "decompressed-size-transaction"}))
+    , mRecvCompressedSizeTransaction(app.getMetrics().NewCounter(
+          {"overlay", "recv", "compressed-size-transaction"}))
+    , mRecvDecompressedSizeTxSet(app.getMetrics().NewCounter(
+          {"overlay", "recv", "decompressed-size-txset"}))
+    , mRecvCompressedSizeTxSet(app.getMetrics().NewCounter(
+          {"overlay", "recv", "compressed-size-txset"}))
+    , mRecvDecompressedSizeGeneralizedTxSet(app.getMetrics().NewCounter(
+          {"overlay", "recv", "decompressed-size-generalized-txset"}))
+    , mRecvCompressedSizeGeneralizedTxSet(app.getMetrics().NewCounter(
+          {"overlay", "recv", "compressed-size-generalized-txset"}))
+    , mSendUncompressedSizeTransaction(app.getMetrics().NewCounter(
+          {"overlay", "send", "uncompressed-size-transaction"}))
+    , mSendCompressedSizeTransaction(app.getMetrics().NewCounter(
+          {"overlay", "send", "compressed-size-transaction"}))
+    , mSendUncompressedSizeTxSet(app.getMetrics().NewCounter(
+          {"overlay", "send", "uncompressed-size-txset"}))
+    , mSendCompressedSizeTxSet(app.getMetrics().NewCounter(
+          {"overlay", "send", "compressed-size-txset"}))
+    , mSendUncompressedSizeGeneralizedTxSet(app.getMetrics().NewCounter(
+          {"overlay", "send", "uncompressed-size-generalized-txset"}))
+    , mSendCompressedSizeGeneralizedTxSet(app.getMetrics().NewCounter(
+          {"overlay", "send", "compressed-size-generalized-txset"}))
     , mRecvGetSCPQuorumSetTimer(
           app.getMetrics().NewTimer({"overlay", "recv", "get-scp-qset"}))
     , mRecvSCPQuorumSetTimer(

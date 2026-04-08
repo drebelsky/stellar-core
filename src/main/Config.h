@@ -724,6 +724,7 @@ class Config : public std::enable_shared_from_this<Config>
     int FLOOD_SOROBAN_TX_PERIOD_MS;
     int32_t FLOOD_ARB_TX_BASE_ALLOWANCE;
     double FLOOD_ARB_TX_DAMPING_FACTOR;
+    int COMPRESSION_LEVEL;
 
     std::chrono::milliseconds FLOOD_DEMAND_PERIOD_MS;
     std::chrono::milliseconds FLOOD_ADVERT_PERIOD_MS;

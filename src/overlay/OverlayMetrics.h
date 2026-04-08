@@ -55,6 +55,27 @@ struct OverlayMetrics
     // histograms. So, we use a `SimpleTimer` of microseconds instead.
     SimpleTimer& mRecvTransactionTimer;
 
+    SimpleTimer& mCompressTransactionTimer;
+    SimpleTimer& mCompressTxSetTimer;
+    SimpleTimer& mCompressGeneralizedTxSetTimer;
+    SimpleTimer& mDecompressTransactionTimer;
+    SimpleTimer& mDecompressTxSetTimer;
+    SimpleTimer& mDecompressGeneralizedTxSetTimer;
+
+    medida::Counter& mRecvDecompressedSizeTransaction;
+    medida::Counter& mRecvCompressedSizeTransaction;
+    medida::Counter& mRecvDecompressedSizeTxSet;
+    medida::Counter& mRecvCompressedSizeTxSet;
+    medida::Counter& mRecvDecompressedSizeGeneralizedTxSet;
+    medida::Counter& mRecvCompressedSizeGeneralizedTxSet;
+
+    medida::Counter& mSendUncompressedSizeTransaction;
+    medida::Counter& mSendCompressedSizeTransaction;
+    medida::Counter& mSendUncompressedSizeTxSet;
+    medida::Counter& mSendCompressedSizeTxSet;
+    medida::Counter& mSendUncompressedSizeGeneralizedTxSet;
+    medida::Counter& mSendCompressedSizeGeneralizedTxSet;
+
     medida::Timer& mRecvGetSCPQuorumSetTimer;
     medida::Timer& mRecvSCPQuorumSetTimer;
     medida::Timer& mRecvSCPMessageTimer;

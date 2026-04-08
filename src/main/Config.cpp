@@ -28,6 +28,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
+#include <zstd.h>
 
 namespace stellar
 {
@@ -257,6 +258,8 @@ Config::Config() : NODE_SEED(SecretKey::random())
 
     FLOOD_ARB_TX_BASE_ALLOWANCE = 5;
     FLOOD_ARB_TX_DAMPING_FACTOR = 0.8;
+
+    COMPRESSION_LEVEL = ZSTD_defaultCLevel();
 
     FLOOD_DEMAND_PERIOD_MS = std::chrono::milliseconds(200);
     FLOOD_ADVERT_PERIOD_MS = std::chrono::milliseconds(100);
@@ -1426,6 +1429,11 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
                          throw std::invalid_argument(
                              "bad value for FLOOD_ARB_TX_DAMPING_FACTOR");
                      }
+                 }},
+                {"COMPRESSION_LEVEL",
+                 [&]() {
+                     COMPRESSION_LEVEL =
+                         readInt<int>(item, ZSTD_minCLevel(), ZSTD_maxCLevel());
                  }},
                 {"PREFERRED_PEERS",
                  [&]() { PREFERRED_PEERS = readArray<std::string>(item); }},

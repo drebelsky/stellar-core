@@ -36,6 +36,8 @@ class Hmac
                                    std::string& errorMsg);
     void setAuthenticatedMessageBody(AuthenticatedMessage& aMsg,
                                      StellarMessage const& msg);
+    void setAuthenticatedMessageBody(AuthenticatedMessage& aMsg,
+                                     xdr::opaque_vec<>&& msg);
 #ifdef BUILD_TESTS
     void damageRecvMacKey();
 #endif

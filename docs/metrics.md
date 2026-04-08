@@ -168,6 +168,16 @@ overlay.recv.<X>                          | timer     | received message <X> (ex
 overlay.recv-transaction.sum              | counter   | sum of time (microseconds) to receive transaction message
 overlay.recv-transaction.count            | counter   | number of transaction messages received
 overlay.recv-transaction.max              | counter   | maximum time (microseconds) to receive transaction message since last metrics call
+overlay.compress.<X>-sum                  | counter   | sum of time (microseconds) to compress message of type X
+overlay.compress.<X>-count                | counter   | number of compressions for X type messages
+overlay.compress.<X>-max                  | counter   | maximum time (microseconds) to compress message of type X since last metrics call
+overlay.decompress.<X>-sum                | counter   | sum of time (microseconds) to decompress message of type X
+overlay.decompress.<X>-count              | counter   | number of decompressions for X type messages
+overlay.decompress.<X>-max                | counter   | maximum time (microseconds) to decompress message of type X since last metrics call
+overlay.recv.decompressed-size-<X>        | counter   | cumulative size for received messages of type X after decompression
+overlay.recv.compressed-size-<X>          | counter   | cumulative size for received messages of type X before decompression
+overlay.send.uncompressed-size-<X>        | counter   | cumulative size for sent messages of type X before compression
+overlay.send.compressed-size-<X>          | counter   | cumulative size for sent messages of type X after compression
 overlay.send.<X>                          | meter     | sent message <X>
 overlay.timeout.idle                      | meter     | idle peer timeout
 overlay.timeout.straggler                 | meter     | straggler peer timeout

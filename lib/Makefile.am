@@ -10,7 +10,18 @@ include $(top_srcdir)/common.mk
 $(srcdir)/lib.mk $(srcdir)/libmedida.mk: $(top_srcdir)/make-mks
 	cd $(top_srcdir) && ./make-mks
 
-noinst_LIBRARIES = libsoci.a lib3rdparty.a
+noinst_LIBRARIES = libsoci.a lib3rdparty.a libzstd.a
+
+# Build zstd using its own Makefile
+ZSTD_SRCDIR = $(top_srcdir)/lib/zstd/lib
+libzstd_a_SOURCES =
+libzstd.a:
+	$(MAKE) -C $(ZSTD_SRCDIR) libzstd.a-release \
+		CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)"
+	cp $(ZSTD_SRCDIR)/libzstd.a $@
+
+clean-local:
+	$(MAKE) -C $(ZSTD_SRCDIR) clean
 
 if LIBMEDIDA_INTERNAL
 noinst_LIBRARIES += libmedida.a

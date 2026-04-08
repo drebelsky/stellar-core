@@ -20,6 +20,7 @@
 #include "main/ErrorMessages.h"
 #include "overlay/FlowControl.h"
 #include "overlay/OverlayManager.h"
+#include "overlay/OverlayManagerImpl.h"
 #include "overlay/OverlayMetrics.h"
 #include "overlay/PeerAuth.h"
 #include "overlay/PeerManager.h"
@@ -146,6 +147,8 @@ Peer::Peer(Application& app, PeerRole role)
     , mRole(role)
     , mOverlayMetrics(app.getOverlayManager().getOverlayMetrics())
     , mPeerMetrics(app.getClock().now())
+    , mOverlayManager(
+          dynamic_cast<OverlayManagerImpl&>(app.getOverlayManager()))
     , mState(role == WE_CALLED_REMOTE ? CONNECTING : CONNECTED)
     , mRemoteOverlayMinVersion(0)
     , mRemoteOverlayVersion(0)
@@ -943,7 +946,19 @@ Peer::sendAuthenticatedMessage(
         // each message, which must be ordered
         ZoneNamedN(authZone, "sendAuthenticatedMessage CB", true);
         AuthenticatedMessage amsg;
-        self->mHmac.setAuthenticatedMessageBody(amsg, *msg);
+        switch (msg->type())
+        {
+        case TRANSACTION:
+        case TX_SET:
+        case GENERALIZED_TX_SET:
+        {
+            self->mHmac.setAuthenticatedMessageBody(
+                amsg, self->mOverlayManager.compressMessage(*msg));
+            break;
+        }
+        default:
+            self->mHmac.setAuthenticatedMessageBody(amsg, *msg);
+        }
         xdr::msg_ptr xdrBytes;
         {
             ZoneNamedN(xdrZone, "XDR serialize", true);
@@ -1029,7 +1044,8 @@ Peer::recvAuthenticatedMessage(AuthenticatedMessage&& msg)
     }
 
     std::string errorMsg;
-    if (getState(guard) >= GOT_HELLO && msg.v0().message.type() != ERROR_MSG)
+    if (getState(guard) >= GOT_HELLO &&
+        (msg.v() == 1 || msg.v0().message.type() != ERROR_MSG))
     {
         if (!mHmac.checkAuthenticatedMessage(msg, errorMsg))
         {
@@ -1049,13 +1065,40 @@ Peer::recvAuthenticatedMessage(AuthenticatedMessage&& msg)
         }
     }
 
+    shared_ptr<CapacityTrackedMessage> msgTracker;
+
     // NOTE: Additionally, we may use state snapshots to verify TRANSACTION type
     // messages in the background.
 
-    // Start tracking capacity here, so read throttling is applied
-    // appropriately. Flow control might not be started at that time
-    auto msgTracker = std::make_shared<CapacityTrackedMessage>(
-        shared_from_this(), msg.v0().message);
+    if (msg.v() == 1)
+    {
+        // decompress and update metrics
+        msgTracker = std::make_shared<CapacityTrackedMessage>(
+            shared_from_this(),
+            mOverlayManager.decompressMessage(msg.v1().message));
+    }
+    else
+    {
+        switch (msg.v0().message.type())
+        {
+        case TRANSACTION:
+        case TX_SET:
+        case GENERALIZED_TX_SET:
+            CLOG_FATAL(Overlay,
+                       "Received uncompressed message of type {}, which is not "
+                       "allowed",
+                       xdr::xdr_traits<MessageType>::enum_name(
+                           msg.v0().message.type()));
+            releaseAssert(false);
+        default:
+            break;
+        }
+
+        // Start tracking capacity here, so read throttling is applied
+        // appropriately. Flow control might not be started at that time
+        msgTracker = std::make_shared<CapacityTrackedMessage>(
+            shared_from_this(), msg.v0().message);
+    }
 
     std::string cat;
     Scheduler::ActionType type = Scheduler::ActionType::NORMAL_ACTION;
@@ -1117,7 +1160,8 @@ Peer::recvAuthenticatedMessage(AuthenticatedMessage&& msg)
     }
 
     // Verify SCP signatures when in the background
-    if (useBackgroundThread() && msg.v0().message.type() == SCP_MESSAGE)
+    if (useBackgroundThread() && msg.v() == 0 &&
+        msg.v0().message.type() == SCP_MESSAGE)
     {
         auto& envelope = msg.v0().message.envelope();
         PubKeyUtils::verifySig(envelope.statement.nodeID, envelope.signature,

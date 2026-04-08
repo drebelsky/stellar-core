@@ -53,3 +53,6 @@
 [submodule "lib/gperftools"]
 	path = lib/gperftools
 	url = https://github.com/gperftools/gperftools.git
+[submodule "lib/zstd"]
+	path = lib/zstd
+	url = https://github.com/facebook/zstd.git

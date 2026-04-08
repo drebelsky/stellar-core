@@ -33,6 +33,38 @@ Hmac::setRecvMackey(HmacSha256Key const& key)
     return true;
 }
 
+namespace
+{
+template <typename T>
+concept IsAuthenticatedMessageVariant =
+    std::same_as<T, AuthenticatedMessage::_v0_t> ||
+    std::same_as<T, AuthenticatedMessage::_v1_t>;
+
+template <IsAuthenticatedMessageVariant T>
+bool
+checkAuth(T const& msg, HmacSha256Key const& recvMacKey, uint64_t expectedSeq,
+          std::string& errorMsg)
+{
+    if (msg.sequence != expectedSeq)
+    {
+        errorMsg = "unexpected auth sequence";
+        return false;
+    }
+    if (isZero(recvMacKey.key))
+    {
+        errorMsg = "receive mac key is zero";
+        return false;
+    }
+    if (!hmacSha256Verify(msg.mac, recvMacKey,
+                          xdr::xdr_to_opaque(msg.sequence, msg.message)))
+    {
+        errorMsg = "unexpected MAC";
+        return false;
+    }
+    return true;
+}
+} // namespace
+
 bool
 Hmac::checkAuthenticatedMessage(AuthenticatedMessage const& msg,
                                 std::string& errorMsg)
@@ -40,23 +72,18 @@ Hmac::checkAuthenticatedMessage(AuthenticatedMessage const& msg,
     ZoneScoped;
     LOCK_GUARD(mMutex, guard);
 
-    if (msg.v0().sequence != mRecvMacSeq)
+    if (msg.v() == 0)
     {
-        errorMsg = "unexpected auth sequence";
+        if (!checkAuth(msg.v0(), mRecvMacKey, mRecvMacSeq, errorMsg))
+        {
+            return false;
+        }
+    }
+    else if (!checkAuth(msg.v1(), mRecvMacKey, mRecvMacSeq, errorMsg))
+    {
         return false;
     }
-    if (isZero(mRecvMacKey.key))
-    {
-        errorMsg = "receive mac key is zero";
-        return false;
-    }
-    if (!hmacSha256Verify(
-            msg.v0().mac, mRecvMacKey,
-            xdr::xdr_to_opaque(msg.v0().sequence, msg.v0().message)))
-    {
-        errorMsg = "unexpected MAC";
-        return false;
-    }
+
     ++mRecvMacSeq;
     return true;
 }
@@ -69,6 +96,7 @@ Hmac::setAuthenticatedMessageBody(AuthenticatedMessage& aMsg,
     ZoneScoped;
     LOCK_GUARD(mMutex, guard);
 
+    aMsg.v(0);
     aMsg.v0().message = msg;
     if (msg.type() != HELLO && msg.type() != ERROR_MSG)
     {
@@ -77,6 +105,22 @@ Hmac::setAuthenticatedMessageBody(AuthenticatedMessage& aMsg,
             hmacSha256(mSendMacKey, xdr::xdr_to_opaque(mSendMacSeq, msg));
         mSendMacSeq++;
     }
+}
+
+void
+Hmac::setAuthenticatedMessageBody(AuthenticatedMessage& aMsg,
+                                  xdr::opaque_vec<>&& msg)
+
+{
+    ZoneScoped;
+    LOCK_GUARD(mMutex, guard);
+
+    aMsg.v(1);
+    aMsg.v1().mac =
+        hmacSha256(mSendMacKey, xdr::xdr_to_opaque(mSendMacSeq, msg));
+    aMsg.v1().message = std::move(msg);
+    aMsg.v1().sequence = mSendMacSeq;
+    mSendMacSeq++;
 }
 
 #ifdef BUILD_TESTS
