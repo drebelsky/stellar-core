@@ -59,8 +59,7 @@ class InvokeHostFunctionOpFrame : public OperationFrame
     doParallelApply(AppConnector& app,
                     ThreadParallelApplyLedgerState const& threadState,
                     Config const& appConfig, Hash const& txPrngSeed,
-                    ParallelLedgerInfo const& ledgerInfo,
-                    SorobanMetrics& sorobanMetrics, OperationResult& res,
+                    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
                     std::optional<RefundableFeeTracker>& refundableFeeTracker,
                     OperationMetaBuilder& opMeta) const override;
 

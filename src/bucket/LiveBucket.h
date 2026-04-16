@@ -17,7 +17,6 @@ namespace stellar
 {
 class AbstractLedgerTxn;
 class Application;
-class EvictionStatistics;
 class LiveBucket;
 template <typename T> class BucketOutputIterator;
 template <typename T> class BucketInputIterator;

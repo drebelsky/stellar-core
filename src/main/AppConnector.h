@@ -16,9 +16,7 @@ class OverlayManager;
 class LedgerManager;
 class Herder;
 class BanManager;
-struct OverlayMetrics;
 class SorobanNetworkConfig;
-class SorobanMetrics;
 class SearchableHotArchiveBucketListSnapshot;
 struct LedgerTxnDelta;
 class CapacityTrackedMessage;
@@ -48,7 +46,6 @@ class AppConnector
     Hash const& getNetworkID() const;
 
     // Thread-safe methods
-    SorobanMetrics& getSorobanMetrics() const;
     void postOnMainThread(
         std::function<void()>&& f, std::string&& message,
         Scheduler::ActionType type = Scheduler::ActionType::NORMAL_ACTION);
@@ -62,7 +59,6 @@ class AppConnector
     Config const& getConfig() const;
     rust::Box<rust_bridge::SorobanModuleCache> getModuleCache();
     bool overlayShuttingDown() const;
-    OverlayMetrics& getOverlayMetrics();
     // This method is always exclusively called from one thread
     bool
     checkScheduledAndCache(std::shared_ptr<CapacityTrackedMessage> msgTracker);

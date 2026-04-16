@@ -123,8 +123,8 @@ std::optional<ParallelTxSuccessVal>
 FeeBumpTransactionFrame::parallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& config, ParallelLedgerInfo const& ledgerInfo,
-    MutableTransactionResultBase& txResult, SorobanMetrics& sorobanMetrics,
-    Hash const& txPrngSeed, TxEffects& effects) const
+    MutableTransactionResultBase& txResult, Hash const& txPrngSeed,
+    TxEffects& effects) const
 {
     try
     {
@@ -134,8 +134,7 @@ FeeBumpTransactionFrame::parallelApply(
         // be accurate for Soroban transactions until
         // FeeBumpTransactionFrame::processPostApply is called.
         return mInnerTx->parallelApply(app, threadState, config, ledgerInfo,
-                                       txResult, sorobanMetrics, txPrngSeed,
-                                       effects);
+                                       txResult, txPrngSeed, effects);
     }
     catch (std::exception& e)
     {

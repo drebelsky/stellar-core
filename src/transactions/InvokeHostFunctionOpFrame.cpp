@@ -106,9 +106,6 @@ maybePopulateOutputDiagnosticEvents(Config const& cfg,
 // Metrics for host function execution
 struct HostFunctionMetrics
 {
-    SorobanMetrics& mMetrics;
-    bool const mDisableMetrics;
-
     uint32_t mReadEntry{0};
     uint32_t mWriteEntry{0};
 
@@ -143,10 +140,7 @@ struct HostFunctionMetrics
 
     bool mSuccess{false};
 
-    HostFunctionMetrics(SorobanMetrics& metrics, bool disableMetrics)
-        : mMetrics(metrics), mDisableMetrics(disableMetrics)
-    {
-    }
+    HostFunctionMetrics() = default;
 
     ~HostFunctionMetrics() = default;
 
@@ -187,11 +181,6 @@ struct HostFunctionMetrics
         }
     }
 
-    std::optional<medida::TimerContext>
-    getExecTimer()
-    {
-        return std::nullopt;
-    }
 };
 
 class InvokeHostFunctionApplyHelper : virtual LedgerAccessHelper
@@ -238,8 +227,6 @@ class InvokeHostFunctionApplyHelper : virtual LedgerAccessHelper
         , mResources(mOpFrame.mParentTx.sorobanResources())
         , mSorobanConfig(sorobanConfig)
         , mAppConfig(app.getConfig())
-        , mMetrics(app.getSorobanMetrics(),
-                   app.getConfig().DISABLE_SOROBAN_METRICS_FOR_TESTING)
         , mStateSnapshot(std::move(stateSnapshot))
         , mModuleCache(moduleCache)
         , mDiagnosticEvents(mOpMeta.getDiagnosticEventManager())
@@ -825,7 +812,6 @@ class InvokeHostFunctionApplyHelper : virtual LedgerAccessHelper
     doApply()
     {
         ZoneNamedN(applyZone, "InvokeHostFunctionOpFrame doApply", true);
-        auto timeScope = mMetrics.getExecTimer();
 
         if (!addFootprint())
         {
@@ -1201,8 +1187,7 @@ std::optional<ParallelTxSuccessVal>
 InvokeHostFunctionOpFrame::doParallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& appConfig, Hash const& txPrngSeed,
-    ParallelLedgerInfo const& ledgerInfo, SorobanMetrics& sorobanMetrics,
-    OperationResult& res,
+    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
     std::optional<RefundableFeeTracker>& refundableFeeTracker,
     OperationMetaBuilder& opMeta) const
 {

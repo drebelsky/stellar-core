@@ -33,12 +33,10 @@ class Timer;
 namespace stellar
 {
 
-class MetricsRegistry;
 struct EvictionResultCandidates;
 struct EvictionResultEntry;
 struct InflationWinner;
 struct StateArchivalSettings;
-class EvictionStatistics;
 template <class BucketT> class BucketListBase;
 template <class BucketT> class BucketLevel;
 class CompleteConstLedgerState;
@@ -211,7 +209,6 @@ class SearchableLiveBucketListSnapshot
 
     std::unique_ptr<EvictionResultCandidates> scanForEviction(
         uint32_t ledgerSeq, EvictionIterator iter,
-        std::shared_ptr<EvictionStatistics> stats,
         StateArchivalSettings const& sas, uint32_t ledgerVers) const;
 
     // Iterate over all entries of a given type. Note this iterates over all

@@ -25,13 +25,11 @@ class LiveBucketList : public BucketListBase<LiveBucket>
                                                uint32_t firstScanLevel,
                                                uint32_t ledgerSeq);
 
-    // Update eviction iter and record stats after scanning a region in one
-    // bucket. Returns true if scan has looped back to startIter, false
-    // otherwise.
-    static bool updateEvictionIterAndRecordStats(
-        EvictionIterator& iter, EvictionIterator startIter,
-        uint32_t configFirstScanLevel, uint32_t ledgerSeq,
-        std::shared_ptr<EvictionStatistics> stats);
+    // Update eviction iter after scanning a region in one bucket. Returns true
+    // if scan has looped back to startIter, false otherwise.
+    static bool updateEvictionIter(EvictionIterator& iter,
+                                   EvictionIterator startIter,
+                                   uint32_t configFirstScanLevel);
 
     static void checkIfEvictionScanIsStuck(EvictionIterator const& evictionIter,
                                            uint32_t scanSize,

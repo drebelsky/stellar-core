@@ -157,7 +157,6 @@ class TransactionFrame : public TransactionFrameBase
     bool validateSorobanOpsConsistency() const;
     int64_t refundSorobanFee(AbstractLedgerTxn& ltx, AccountID const& feeSource,
                              MutableTransactionResultBase& txResult) const;
-    void updateSorobanMetrics(AppConnector& app) const;
     bool accessesFrozenKey(SorobanNetworkConfig const& cfg) const;
 
 #ifdef BUILD_TESTS
@@ -316,8 +315,7 @@ class TransactionFrame : public TransactionFrameBase
         AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
         Config const& config, ParallelLedgerInfo const& ledgerInfo,
         MutableTransactionResultBase& resPayload,
-        SorobanMetrics& sorobanMetrics, Hash const& sorobanBasePrngSeed,
-        TxEffects& effects) const override;
+        Hash const& sorobanBasePrngSeed, TxEffects& effects) const override;
 
     // apply this transaction to the current ledger
     // returns true if successfully applied

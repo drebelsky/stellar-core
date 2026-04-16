@@ -135,7 +135,6 @@ BucketManager::BucketManager(AppConnector& appConnector)
     , mTmpDirManager(nullptr)
     , mWorkDir(nullptr)
     , mLockedBucketDir(nullptr)
-    , mEvictionStatistics(std::make_shared<EvictionStatistics>())
     , mConfig(appConnector.getConfig())
 {
 }
@@ -162,11 +161,6 @@ extractFromFilename(std::string const& name)
 {
     return hexToBin256(name.substr(7, 64));
 };
-}
-
-void
-BucketManager::updateSharedBucketSize()
-{
 }
 
 std::string
@@ -489,7 +483,6 @@ BucketManager::adoptFileAsBucketInternal(
         }
 
         bucketMap.emplace(hash, b);
-        updateSharedBucketSize();
     }
     releaseAssert(b);
     if (mergeKey)
@@ -617,7 +610,6 @@ BucketManager::getBucketByHashInternal(uint256 const& hash,
         auto p =
             std::make_shared<BucketT>(canonicalName, hash, /*index=*/nullptr);
         bucketMap.emplace(hash, p);
-        updateSharedBucketSize();
         return p;
     }
     return std::shared_ptr<BucketT>();
@@ -960,7 +952,6 @@ BucketManager::forgetUnreferencedBuckets(HistoryArchiveState const& has)
 
     bucketMapLoop(mSharedLiveBuckets, mLiveBucketFutures);
     bucketMapLoop(mSharedHotArchiveBuckets, mHotArchiveBucketFutures);
-    updateSharedBucketSize();
 }
 
 void
@@ -978,7 +969,6 @@ BucketManager::addLiveBatch(Application& app, LedgerHeader header,
 #endif
     mLiveBucketList->addBatch(app, header.ledgerSeq, header.ledgerVersion,
                               initEntries, liveEntries, deadEntries);
-    reportBucketEntryCountMetrics();
     reportLiveBucketIndexCacheMetrics();
 }
 
@@ -1085,7 +1075,6 @@ BucketManager::startBackgroundEvictionScan(ApplyLedgerStateSnapshot lclSnapshot,
                                            SorobanNetworkConfig const& cfg)
 {
     releaseAssert(!mEvictionFuture.valid());
-    releaseAssert(mEvictionStatistics);
 
     // Start the eviction scan for then _next_ ledger
     auto ledgerSeq = lclSnapshot.getLedgerSeq() + 1;
@@ -1097,10 +1086,8 @@ BucketManager::startBackgroundEvictionScan(ApplyLedgerStateSnapshot lclSnapshot,
         std::packaged_task<std::unique_ptr<EvictionResultCandidates>()>;
     auto task = std::make_shared<task_t>(
         [snap = std::move(lclSnapshot), iter = cfg.evictionIterator(),
-         ledgerSeq, ledgerVers, sas,
-         stats = mEvictionStatistics]() mutable {
-            return snap.scanForEviction(ledgerSeq, iter, stats, sas,
-                                        ledgerVers);
+         ledgerSeq, ledgerVers, sas]() mutable {
+            return snap.scanForEviction(ledgerSeq, iter, sas, ledgerVers);
         });
 
     mEvictionFuture = task->get_future();
@@ -1115,7 +1102,6 @@ BucketManager::resolveBackgroundEvictionScan(
     LedgerKeySet const& modifiedKeys)
 {
     ZoneScoped;
-    releaseAssert(mEvictionStatistics);
     auto ls = LedgerSnapshot(ltx);
     auto ledgerSeq = ls.getLedgerHeader().current().ledgerSeq;
     auto ledgerVers = ls.getLedgerHeader().current().ledgerVersion;
@@ -1201,8 +1187,6 @@ BucketManager::resolveBackgroundEvictionScan(
         // Delete TTL for both types
         deletedKeys.emplace_back(getTTLKey(entryToEvictIter->entry));
 
-        auto age = ledgerSeq - entryToEvictIter->liveUntilLedger;
-        mEvictionStatistics->recordEvictedEntry(age);
 #ifdef BUILD_TESTS
         getEntriesEvictedCounter().inc();
 #endif
@@ -1767,11 +1751,6 @@ Config const&
 BucketManager::getConfig() const
 {
     return mConfig;
-}
-
-void
-BucketManager::reportBucketEntryCountMetrics()
-{
 }
 
 template void BucketManager::maybeSetIndex<LiveBucket>(

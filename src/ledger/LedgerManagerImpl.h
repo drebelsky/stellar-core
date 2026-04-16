@@ -11,7 +11,6 @@
 #include "ledger/LedgerCloseMetaFrame.h"
 #include "ledger/LedgerManager.h"
 #include "ledger/SharedModuleCacheCompiler.h"
-#include "ledger/SorobanMetrics.h"
 #include "main/ApplicationImpl.h"
 #include "rust/RustBridge.h"
 #include "transactions/ParallelApplyStage.h"
@@ -64,12 +63,6 @@ class LedgerManagerImpl : public LedgerManager
     std::filesystem::path mMetaDebugPath;
 
   private:
-    struct LedgerApplyMetrics
-    {
-        SorobanMetrics mSorobanMetrics;
-        LedgerApplyMetrics(MetricsRegistry& registry);
-    };
-
     // LedgerManager thread model is as follows. There is a "primary apply
     // thread" responsible for applying classic transactions, orchestrating
     // parallel Soroban transaction execution, committing state, and advancing
@@ -138,8 +131,6 @@ class LedgerManagerImpl : public LedgerManager
         };
 
       private:
-        LedgerApplyMetrics mMetrics;
-
         AppConnector& mAppConnector;
 
         // Ledger state snapshot that is the base for current ledger apply
@@ -179,8 +170,6 @@ class LedgerManagerImpl : public LedgerManager
         void assertWritablePhase() const;
 
       public:
-        LedgerApplyMetrics& getMetrics();
-
         ApplyState(Application& app);
 
         // Asserts that calling thread is the primary apply thread.
@@ -412,10 +401,6 @@ class LedgerManagerImpl : public LedgerManager
 
     void emitNextMeta();
 
-    // Publishes soroban metrics, including select network config limits as well
-    // as the actual ledger usage.
-    void publishSorobanMetrics();
-
     // Update cached last closed ledger state values managed by this class.
     void
     advanceLastClosedLedgerState(CompleteConstLedgerStatePtr newLedgerState);
@@ -546,7 +531,6 @@ class LedgerManagerImpl : public LedgerManager
     void setupLedgerCloseMetaStream();
     void maybeResetLedgerCloseMetaDebugStream(uint32_t ledgerSeq);
 
-    SorobanMetrics& getSorobanMetrics() override;
     LedgerStateSnapshot copyLedgerStateSnapshot() const override;
     ApplyLedgerStateSnapshot copyApplyLedgerStateSnapshot() const override;
     void maybeUpdateLedgerStateSnapshot(

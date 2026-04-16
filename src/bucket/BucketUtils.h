@@ -141,25 +141,6 @@ struct EvictedStateVectors
     std::vector<LedgerEntry> archivedEntries;
 };
 
-class EvictionStatistics
-{
-  private:
-    std::mutex mLock{};
-
-    // Only record metrics if we've seen a complete cycle to avoid noise
-    bool mCompleteCycle{false};
-    uint64_t mEvictedEntriesAgeSum{};
-    uint64_t mNumEntriesEvicted{};
-    uint32_t mEvictionCycleStartLedger{};
-
-  public:
-    // Evicted entry "age" is the delta between its liveUntilLedger and the
-    // ledger when the entry is actually evicted
-    void recordEvictedEntry(uint64_t age);
-
-    void submitMetricsAndRestartCycle(uint32_t currLedgerSeq);
-};
-
 // Enum for more granular LedgerEntry types for Bucket metric reporting.
 // Specifically, this enum differentiates between TEMPORARY and PERSISTENT
 // CONTRACT_DATA types, which the regular LedgerEntryType enum does not.

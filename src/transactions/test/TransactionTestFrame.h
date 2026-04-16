@@ -159,8 +159,7 @@ class TransactionTestFrame : public TransactionFrameBase
         AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
         Config const& config, ParallelLedgerInfo const& ledgerInfo,
         MutableTransactionResultBase& resPayload,
-        SorobanMetrics& sorobanMetrics, Hash const& sorobanBasePrngSeed,
-        TxEffects& effects) const override;
+        Hash const& sorobanBasePrngSeed, TxEffects& effects) const override;
 
     MutableTxResultPtr
     processFeeSeqNum(AbstractLedgerTxn& ltx,

@@ -8,7 +8,6 @@
 #include "main/Application.h"
 #include "overlay/BanManager.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/Peer.h"
 #include "util/Timer.h"
 
@@ -65,12 +64,6 @@ bool
 AppConnector::isStopping() const
 {
     return mApp.isStopping();
-}
-
-SorobanMetrics&
-AppConnector::getSorobanMetrics() const
-{
-    return mApp.getLedgerManager().getSorobanMetrics();
 }
 
 void
@@ -147,13 +140,6 @@ AppConnector::shouldYield() const
 {
     releaseAssert(threadIsMain());
     return mApp.getClock().shouldYield();
-}
-
-OverlayMetrics&
-AppConnector::getOverlayMetrics()
-{
-    // OverlayMetrics class is thread-safe
-    return mApp.getOverlayManager().getOverlayMetrics();
 }
 
 bool

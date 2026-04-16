@@ -168,26 +168,6 @@ EvictionResultCandidates::isValid(uint32_t currLedgerSeq,
                currSas.startingEvictionScanLevel;
 }
 
-void
-EvictionStatistics::recordEvictedEntry(uint64_t age)
-{
-    std::lock_guard l(mLock);
-    ++mNumEntriesEvicted;
-    mEvictedEntriesAgeSum += age;
-}
-
-void
-EvictionStatistics::submitMetricsAndRestartCycle(uint32_t currLedgerSeq)
-{
-    std::lock_guard l(mLock);
-
-    // Reset to start new cycle
-    mCompleteCycle = true;
-    mEvictedEntriesAgeSum = 0;
-    mNumEntriesEvicted = 0;
-    mEvictionCycleStartLedger = currLedgerSeq;
-}
-
 template <>
 LedgerEntryTypeAndDurability
 bucketEntryToLedgerEntryAndDurabilityType<LiveBucket>(

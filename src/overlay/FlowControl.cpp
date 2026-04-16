@@ -8,7 +8,6 @@
 #include "medida/meter.h"
 #include "medida/timer.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/OverlayUtils.h"
 #include "util/Logging.h"
 #include <Tracy.hpp>
@@ -33,7 +32,6 @@ FlowControl::FlowControl(AppConnector& connector, bool useBackgroundThread)
     , mFlowControlBytesCapacity(
           connector.getConfig(), mNodeID,
           connector.getOverlayManager().getFlowControlBytesTotal())
-    , mOverlayMetrics(connector.getOverlayManager().getOverlayMetrics())
     , mAppConnector(connector)
     , mUseBackgroundThread(useBackgroundThread)
     , mNoOutboundCapacity(

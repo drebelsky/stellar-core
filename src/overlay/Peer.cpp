@@ -20,7 +20,6 @@
 #include "main/ErrorMessages.h"
 #include "overlay/FlowControl.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/PeerAuth.h"
 #include "overlay/PeerManager.h"
 #include "overlay/SurveyDataManager.h"
@@ -144,7 +143,6 @@ Peer::Peer(Application& app, PeerRole role)
     , mLastWrite(app.getClock().now())
     , mEnqueueTimeOfLastWrite(app.getClock().now())
     , mRole(role)
-    , mOverlayMetrics(app.getOverlayManager().getOverlayMetrics())
     , mPeerMetrics(app.getClock().now())
     , mState(role == WE_CALLED_REMOTE ? CONNECTING : CONNECTED)
     , mRemoteOverlayMinVersion(0)

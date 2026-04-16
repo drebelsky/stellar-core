@@ -13,7 +13,6 @@
 #include "ledger/LedgerTxn.h"
 #include "overlay/Floodgate.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/SurveyManager.h"
 #include "overlay/TxDemandsManager.h"
 #include "util/Timer.h"
@@ -76,8 +75,6 @@ class OverlayManagerImpl : public OverlayManager
     PeerDoor mDoor;
     PeerAuth mAuth;
     std::atomic<bool> mShuttingDown;
-
-    OverlayMetrics mOverlayMetrics;
 
     // NOTE: bool is used here as a placeholder, since no ValueType is needed.
     RandomEvictionCache<uint64_t, bool> mMessageCache;
@@ -146,7 +143,6 @@ class OverlayManagerImpl : public OverlayManager
 
     std::set<Peer::pointer> getPeersKnows(Hash const& h) override;
 
-    OverlayMetrics& getOverlayMetrics() override;
     PeerAuth& getPeerAuth() override;
 
     PeerManager& getPeerManager() override;

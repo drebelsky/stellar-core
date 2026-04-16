@@ -8,7 +8,6 @@
 #include "medida/meter.h"
 #include "medida/timer.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/StellarXDR.h"
 #include "util/Logging.h"
 #include "util/Math.h"

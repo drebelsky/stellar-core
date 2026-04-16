@@ -9,7 +9,6 @@
 #include "medida/meter.h"
 #include "overlay/FlowControlCapacity.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/TxAdverts.h"
 #include "util/Logging.h"
 #include "util/numeric.h"

@@ -17,7 +17,6 @@
 #include "util/types.h"
 #include <optional>
 
-#include "ledger/SorobanMetrics.h"
 
 namespace stellar
 {
@@ -169,8 +168,7 @@ class TransactionFrameBase
         AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
         Config const& config, ParallelLedgerInfo const& ledgerInfo,
         MutableTransactionResultBase& resPayload,
-        SorobanMetrics& sorobanMetrics, Hash const& sorobanBasePrngSeed,
-        TxEffects& effects) const = 0;
+        Hash const& sorobanBasePrngSeed, TxEffects& effects) const = 0;
 
     virtual MutableTxResultPtr
     checkValid(AppConnector& app, LedgerSnapshot const& ls,

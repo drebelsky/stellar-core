@@ -11,7 +11,6 @@
 #include "medida/meter.h"
 #include "overlay/FlowControl.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "util/GlobalChecks.h"
 #include "util/JitterInjection.h"
 #include "util/LogSlowExecution.h"

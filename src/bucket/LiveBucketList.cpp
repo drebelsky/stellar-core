@@ -112,13 +112,10 @@ LiveBucketList::updateStartingEvictionIterator(EvictionIterator& iter,
 }
 
 bool
-LiveBucketList::updateEvictionIterAndRecordStats(
-    EvictionIterator& iter, EvictionIterator startIter,
-    uint32_t configFirstScanLevel, uint32_t ledgerSeq,
-    std::shared_ptr<EvictionStatistics> stats)
+LiveBucketList::updateEvictionIter(EvictionIterator& iter,
+                                   EvictionIterator startIter,
+                                   uint32_t configFirstScanLevel)
 {
-    releaseAssert(stats);
-
     // If we reached eof in curr bucket, start scanning snap.
     // Last level has no snap so cycle back to the initial level.
     if (iter.isCurrBucket && iter.bucketListLevel != kNumLevels - 1)
@@ -138,7 +135,6 @@ LiveBucketList::updateEvictionIterAndRecordStats(
         if (iter.bucketListLevel == kNumLevels)
         {
             iter.bucketListLevel = configFirstScanLevel;
-            stats->submitMetricsAndRestartCycle(ledgerSeq);
         }
     }
 

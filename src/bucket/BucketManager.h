@@ -108,7 +108,6 @@ class BucketManager : NonMovableOrCopyable
     std::unique_ptr<std::string> mLockedBucketDir;
     MergeCounters mLiveMergeCounters;
     MergeCounters mHotArchiveMergeCounters;
-    std::shared_ptr<EvictionStatistics> mEvictionStatistics{};
 
     std::future<std::unique_ptr<EvictionResultCandidates>> mEvictionFuture{};
 
@@ -136,8 +135,6 @@ class BucketManager : NonMovableOrCopyable
     void cleanupStaleFiles(HistoryArchiveState const& has);
     void deleteTmpDirAndUnlockBucketDir();
     void deleteEntireBucketDir();
-
-    void updateSharedBucketSize();
 
     template <class BucketT>
     std::shared_ptr<BucketT> adoptFileAsBucketInternal(
@@ -432,7 +429,6 @@ class BucketManager : NonMovableOrCopyable
                                         HistoryArchiveState const& has);
 
     Config const& getConfig() const;
-    void reportBucketEntryCountMetrics();
 };
 
 #define SKIP_1 50

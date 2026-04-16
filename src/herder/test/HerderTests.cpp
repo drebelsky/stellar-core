@@ -29,7 +29,6 @@
 #include "ledger/LedgerTxnHeader.h"
 #include "main/CommandHandler.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "test/Catch2.h"
 #include "test/TxTests.h"
 #include "transactions/OperationFrame.h"

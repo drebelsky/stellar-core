@@ -19,7 +19,6 @@
 #include "ledger/LedgerTxnEntry.h"
 #include "ledger/LedgerTxnHeader.h"
 #include "ledger/LedgerTypeUtils.h"
-#include "ledger/SorobanMetrics.h"
 #include "main/AppConnector.h"
 #include "main/Application.h"
 #include "transactions/EventManager.h"
@@ -1083,28 +1082,6 @@ TransactionFrame::refundSorobanFee(AbstractLedgerTxn& ltxOuter,
     return feeRefund;
 }
 
-void
-TransactionFrame::updateSorobanMetrics(AppConnector& app) const
-{
-    releaseAssertOrThrow(isSoroban());
-    if (app.getConfig().DISABLE_SOROBAN_METRICS_FOR_TESTING)
-    {
-        return;
-    }
-
-    SorobanMetrics& metrics = app.getSorobanMetrics();
-    auto txSize = static_cast<int64_t>(this->getSize());
-    auto const& r = sorobanResources();
-    metrics.accumulateLedgerTxCount(getNumOperations());
-    metrics.accumulateLedgerCpuInsn(r.instructions);
-    metrics.accumulateLedgerTxsSizeByte(txSize);
-    metrics.accumulateLedgerReadEntry(static_cast<int64_t>(
-        r.footprint.readOnly.size() + r.footprint.readWrite.size()));
-    metrics.accumulateLedgerReadByte(r.diskReadBytes);
-    metrics.accumulateLedgerWriteEntry(
-        static_cast<int64_t>(r.footprint.readWrite.size()));
-    metrics.accumulateLedgerWriteByte(r.writeBytes);
-}
 
 bool
 TransactionFrame::accessesFrozenKey(SorobanNetworkConfig const& cfg) const
@@ -2162,8 +2139,6 @@ TransactionFrame::preParallelApply(bool chargeFee, AppConnector& app,
         bool ok = signatureChecker != nullptr;
         if (ok)
         {
-            updateSorobanMetrics(app);
-
             auto& opResult = txResult.getOpResultAt(0);
 
             // Pre parallel soroban, OperationFrame::checkValid is called
@@ -2200,7 +2175,7 @@ std::optional<ParallelTxSuccessVal>
 TransactionFrame::parallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& config, ParallelLedgerInfo const& ledgerInfo,
-    MutableTransactionResultBase& txResult, SorobanMetrics& sorobanMetrics,
+    MutableTransactionResultBase& txResult,
     Hash const& txPrngSeed, TxEffects& effects) const
 {
     ZoneScoped;
@@ -2232,7 +2207,7 @@ TransactionFrame::parallelApply(
         auto& opMeta = effects.getMeta().getOperationMetaBuilderAt(0);
 
         auto res = op->parallelApply(
-            app, threadState, config, ledgerInfo, sorobanMetrics, opResult,
+            app, threadState, config, ledgerInfo, opResult,
             txResult.getRefundableFeeTracker(), opMeta, txPrngSeed);
 
 #ifdef BUILD_TESTS
@@ -2484,11 +2459,6 @@ TransactionFrame::apply(
             // have the correct TransactionResult so we must crash.
             if (ok)
             {
-                if (isSoroban())
-                {
-                    updateSorobanMetrics(app);
-                }
-
                 ok =
                     applyOperations(*signatureChecker, app, ltx, meta, txResult,
                                     sorobanConfig, sorobanBasePrngSeed);

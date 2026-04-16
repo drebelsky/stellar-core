@@ -379,12 +379,12 @@ std::optional<ParallelTxSuccessVal>
 TransactionTestFrame::parallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& config, ParallelLedgerInfo const& ledgerInfo,
-    MutableTransactionResultBase& resPayload, SorobanMetrics& sorobanMetrics,
-    Hash const& txPrngSeed, TxEffects& effects) const
+    MutableTransactionResultBase& resPayload, Hash const& txPrngSeed,
+    TxEffects& effects) const
 {
-    return mTransactionFrame->parallelApply(
-        app, threadState, config, ledgerInfo, resPayload, sorobanMetrics,
-        txPrngSeed, effects);
+    return mTransactionFrame->parallelApply(app, threadState, config,
+                                            ledgerInfo, resPayload, txPrngSeed,
+                                            effects);
 }
 
 MutableTxResultPtr

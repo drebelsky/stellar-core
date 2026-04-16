@@ -6,7 +6,6 @@
 
 #include "main/Application.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/test/OverlayTestUtils.h"
 #include "simulation/Simulation.h"
 #include "util/Logging.h"

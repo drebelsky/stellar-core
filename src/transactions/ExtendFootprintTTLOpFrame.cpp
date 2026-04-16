@@ -26,20 +26,7 @@ innerResult(OperationResult& res)
 
 struct ExtendFootprintTTLMetrics
 {
-    SorobanMetrics& mMetrics;
-
     uint32 mLedgerReadByte{0};
-
-    ExtendFootprintTTLMetrics(SorobanMetrics& metrics) : mMetrics(metrics)
-    {
-    }
-
-    ~ExtendFootprintTTLMetrics() = default;
-    std::optional<medida::TimerContext>
-    getExecTimer()
-    {
-        return std::nullopt;
-    }
 };
 
 ExtendFootprintTTLOpFrame::ExtendFootprintTTLOpFrame(
@@ -87,7 +74,6 @@ class ExtendFootprintTTLApplyHelper : virtual public LedgerAccessHelper
         , mResources(mOpFrame.mParentTx.sorobanResources())
         , mSorobanConfig(sorobanConfig)
         , mAppConfig(app.getConfig())
-        , mMetrics(app.getSorobanMetrics())
         , mDiagnosticEvents(mOpMeta.getDiagnosticEventManager())
     {
     }
@@ -99,8 +85,6 @@ class ExtendFootprintTTLApplyHelper : virtual public LedgerAccessHelper
     {
         ZoneNamedN(applyZone, "ExtendFootprintTTLOpFrame apply", true);
         releaseAssertOrThrow(mRefundableFeeTracker);
-
-        auto timeScope = mMetrics.getExecTimer();
 
         auto const& footprint = mResources.footprint;
 
@@ -261,8 +245,7 @@ std::optional<ParallelTxSuccessVal>
 ExtendFootprintTTLOpFrame::doParallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& appConfig, Hash const& _txPrngSeed,
-    ParallelLedgerInfo const& ledgerInfo, SorobanMetrics& sorobanMetrics,
-    OperationResult& res,
+    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
     std::optional<RefundableFeeTracker>& refundableFeeTracker,
     OperationMetaBuilder& opMeta) const
 {

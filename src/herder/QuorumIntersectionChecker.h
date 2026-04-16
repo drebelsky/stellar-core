@@ -18,7 +18,6 @@ namespace stellar
 class Config;
 class Application;
 class TmpDir;
-class MetricsRegistry;
 
 struct QuorumMapIntersectionState
 {

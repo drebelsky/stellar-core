@@ -176,7 +176,7 @@ std::optional<ParallelTxSuccessVal>
 OperationFrame::parallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& config, ParallelLedgerInfo const& ledgerInfo,
-    SorobanMetrics& sorobanMetrics, OperationResult& res,
+    OperationResult& res,
     std::optional<RefundableFeeTracker>& refundableFeeTracker,
     OperationMetaBuilder& opMeta, Hash const& txPrngSeed) const
 {
@@ -185,15 +185,14 @@ OperationFrame::parallelApply(
     // checkValid is called earlier in preParallelApply
 
     return doParallelApply(app, threadState, config, txPrngSeed, ledgerInfo,
-                           sorobanMetrics, res, refundableFeeTracker, opMeta);
+                           res, refundableFeeTracker, opMeta);
 }
 
 std::optional<ParallelTxSuccessVal>
 OperationFrame::doParallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& appConfig, Hash const& txPrngSeed,
-    ParallelLedgerInfo const& ledgerInfo, SorobanMetrics& sorobanMetrics,
-    OperationResult& res,
+    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
     std::optional<RefundableFeeTracker>& refundableFeeTracker,
     OperationMetaBuilder& opMeta) const
 {

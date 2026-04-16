@@ -5,6 +5,7 @@
 #pragma once
 
 #include "main/Config.h"
+#include "util/MetricsRegistry.h"
 #include "xdr/Stellar-ledger-entries.h"
 #include "xdr/Stellar-types.h"
 #include <lib/json/json.h>
@@ -52,8 +53,6 @@ class Protocol23CorruptionEventReconciler;
 class LoadGenerator;
 class TestAccount;
 #endif
-
-class MetricsRegistry;
 
 class Application;
 void validateNetworkPassphrase(std::shared_ptr<Application> app);

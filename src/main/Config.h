@@ -547,9 +547,6 @@ class Config : public std::enable_shared_from_this<Config>
     // Enable parallel block application (experimental)
     bool PARALLEL_LEDGER_APPLY;
 
-    // Disable expensive Soroban metrics for performance testing
-    bool DISABLE_SOROBAN_METRICS_FOR_TESTING;
-
     // Batch transactions for flooding purposes (experimental).
     // Has no effect on non-test builds.
     size_t EXPERIMENTAL_TX_BATCH_MAX_SIZE;

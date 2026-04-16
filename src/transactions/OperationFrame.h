@@ -66,8 +66,7 @@ class OperationFrame
     doParallelApply(AppConnector& app,
                     ThreadParallelApplyLedgerState const& threadState,
                     Config const& config, Hash const& txPrngSeed,
-                    ParallelLedgerInfo const& ledgerInfo,
-                    SorobanMetrics& sorobanMetrics, OperationResult& res,
+                    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
                     std::optional<RefundableFeeTracker>& refundableFeeTracker,
                     OperationMetaBuilder& opMeta) const;
 
@@ -119,7 +118,7 @@ class OperationFrame
     std::optional<ParallelTxSuccessVal> parallelApply(
         AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
         Config const& config, ParallelLedgerInfo const& ledgerInfo,
-        SorobanMetrics& sorobanMetrics, OperationResult& res,
+        OperationResult& res,
         std::optional<RefundableFeeTracker>& refundableFeeTracker,
         OperationMetaBuilder& opMeta, Hash const& sorobanBasePrngSeed) const;
 

@@ -188,25 +188,12 @@ LedgerManager::ledgerAbbrev(LedgerHeaderHistoryEntry const& he)
     return ledgerAbbrev(he.header, he.hash);
 }
 
-LedgerManagerImpl::LedgerApplyMetrics::LedgerApplyMetrics(
-    MetricsRegistry& registry)
-    : mSorobanMetrics(registry)
-{
-}
-
 LedgerManagerImpl::ApplyState::ApplyState(Application& app)
-    : mMetrics(app.getMetrics())
-    , mAppConnector(app.getAppConnector())
+    : mAppConnector(app.getAppConnector())
     , mModuleCache(::rust_bridge::new_module_cache())
     , mModuleCacheProtocols(getModuleCacheProtocols())
     , mNumCompilationThreads(app.getConfig().COMPILATION_THREADS)
 {
-}
-
-LedgerManagerImpl::LedgerApplyMetrics&
-LedgerManagerImpl::ApplyState::getMetrics()
-{
-    return mMetrics;
 }
 
 InMemorySorobanState const&
@@ -287,8 +274,7 @@ LedgerManagerImpl::ApplyState::updateInMemorySorobanState(
 {
     assertWritablePhase();
     mInMemorySorobanState.updateState(initEntries, liveEntries, deadEntries, lh,
-                                      sorobanConfig,
-                                      getMetrics().mSorobanMetrics);
+                                      sorobanConfig);
 }
 
 uint64_t
@@ -882,12 +868,6 @@ LedgerManagerImpl::getSorobanInMemoryStateSizeForTesting()
 }
 #endif
 
-SorobanMetrics&
-LedgerManagerImpl::getSorobanMetrics()
-{
-    return mApplyState.getMetrics().mSorobanMetrics;
-}
-
 std::unique_ptr<LedgerTxnRoot>
 LedgerManagerImpl::createLedgerTxnRoot(Application& app, size_t entryCacheSize,
                                        size_t prefetchBatchSize
@@ -1126,11 +1106,6 @@ LedgerManagerImpl::ApplyState::maybeRebuildModuleCache(
     }
 }
 
-void
-LedgerManagerImpl::publishSorobanMetrics()
-{
-}
-
 // called by txherder
 void
 LedgerManagerImpl::valueExternalized(LedgerCloseData const& ledgerData,
@@ -1336,9 +1311,6 @@ LedgerManagerImpl::advanceLedgerStateAndPublish(
     // ledger.
     releaseAssert(threadIsMain());
     advanceLastClosedLedgerState(newLedgerState);
-    // We can publish Soroban metrics at any point after advancing the LCL
-    // state.
-    publishSorobanMetrics();
 
     // Maybe kick off publishing on complete checkpoint files
     auto& hm = mApp.getHistoryManager();
@@ -2308,7 +2280,7 @@ LedgerManagerImpl::applyThread(
 
         auto res = txBundle.getTx()->parallelApply(
             app, *threadState, config, ledgerInfo, txBundle.getResPayload(),
-            getSorobanMetrics(), txSubSeed, txBundle.getEffects());
+            txSubSeed, txBundle.getEffects());
 
         if (res)
         {

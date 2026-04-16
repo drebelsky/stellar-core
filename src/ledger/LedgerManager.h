@@ -19,7 +19,6 @@ namespace stellar
 
 class LedgerCloseData;
 class Database;
-class SorobanMetrics;
 class InMemorySorobanState;
 
 // This diagram provides a schematic of the flow of (logical) ledgers coming in
@@ -368,7 +367,6 @@ class LedgerManager
 
     virtual void manuallyAdvanceLedgerHeader(LedgerHeader const& header) = 0;
 
-    virtual SorobanMetrics& getSorobanMetrics() = 0;
     virtual ::rust::Box<rust_bridge::SorobanModuleCache> getModuleCache() = 0;
 
     virtual ~LedgerManager()

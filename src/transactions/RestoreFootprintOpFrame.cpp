@@ -27,21 +27,8 @@ innerResult(OperationResult& res)
 
 struct RestoreFootprintMetrics
 {
-    SorobanMetrics& mMetrics;
-
     uint32_t mLedgerReadByte{0};
     uint32_t mLedgerWriteByte{0};
-
-    RestoreFootprintMetrics(SorobanMetrics& metrics) : mMetrics(metrics)
-    {
-    }
-
-    ~RestoreFootprintMetrics() = default;
-    std::optional<medida::TimerContext>
-    getExecTimer()
-    {
-        return std::nullopt;
-    }
 };
 
 RestoreFootprintOpFrame::RestoreFootprintOpFrame(
@@ -82,7 +69,6 @@ class RestoreFootprintApplyHelper : virtual public LedgerAccessHelper
         , mResources(mOpFrame.mParentTx.sorobanResources())
         , mSorobanConfig(sorobanConfig)
         , mAppConfig(app.getConfig())
-        , mMetrics(app.getSorobanMetrics())
         , mDiagnosticEvents(mOpMeta.getDiagnosticEventManager())
     {
     }
@@ -99,7 +85,6 @@ class RestoreFootprintApplyHelper : virtual public LedgerAccessHelper
     apply()
     {
         ZoneNamedN(applyZone, "RestoreFootprintOpFrame apply", true);
-        auto timeScope = mMetrics.getExecTimer();
 
         auto const& resources = mOpFrame.mParentTx.sorobanResources();
         auto const& footprint = resources.footprint;
@@ -366,8 +351,7 @@ std::optional<ParallelTxSuccessVal>
 RestoreFootprintOpFrame::doParallelApply(
     AppConnector& app, ThreadParallelApplyLedgerState const& threadState,
     Config const& appConfig, Hash const& txPrngSeed,
-    ParallelLedgerInfo const& ledgerInfo, SorobanMetrics& sorobanMetrics,
-    OperationResult& res,
+    ParallelLedgerInfo const& ledgerInfo, OperationResult& res,
     std::optional<RefundableFeeTracker>& refundableFeeTracker,
     OperationMetaBuilder& opMeta) const
 {

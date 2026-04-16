@@ -12,7 +12,6 @@
 #include "main/Application.h"
 #include "main/Config.h"
 #include "overlay/OverlayManager.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/PeerDoor.h"
 #include "overlay/TCPPeer.h"
 #include "overlay/test/OverlayTestUtils.h"

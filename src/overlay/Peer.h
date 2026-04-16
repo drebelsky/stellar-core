@@ -38,7 +38,6 @@ static uint32_t const MAX_CLASSIC_TX_SIZE_BYTES = 100 * 1024;
 
 class Application;
 class LoopbackPeer;
-struct OverlayMetrics;
 class FlowControl;
 class TxAdverts;
 class CapacityTrackedMessage;
@@ -186,7 +185,6 @@ class Peer : public std::enable_shared_from_this<Peer>,
     std::atomic<VirtualClock::time_point> mEnqueueTimeOfLastWrite;
 
     PeerRole const mRole;
-    OverlayMetrics& mOverlayMetrics;
     // No need for GUARDED_BY, PeerMetrics is thread-safe
     PeerMetrics mPeerMetrics;
 

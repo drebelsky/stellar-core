@@ -549,12 +549,10 @@ SearchableLiveBucketListSnapshot::loadInflationWinners(size_t maxWinners,
 std::unique_ptr<EvictionResultCandidates>
 SearchableLiveBucketListSnapshot::scanForEviction(
     uint32_t ledgerSeq, EvictionIterator evictionIter,
-    std::shared_ptr<EvictionStatistics> stats, StateArchivalSettings const& sas,
-    uint32_t ledgerVers) const
+    StateArchivalSettings const& sas, uint32_t ledgerVers) const
 {
     ZoneScoped;
     releaseAssert(mData);
-    releaseAssert(stats);
 
     auto getBucketFromIter =
         [&levels = mData->levels](
@@ -587,9 +585,8 @@ SearchableLiveBucketListSnapshot::scanForEviction(
         }
 
         // If we return back to the Bucket we started at, exit
-        if (LiveBucketList::updateEvictionIterAndRecordStats(
-                evictionIter, startIter, sas.startingEvictionScanLevel,
-                ledgerSeq, stats))
+        if (LiveBucketList::updateEvictionIter(
+                evictionIter, startIter, sas.startingEvictionScanLevel))
         {
             break;
         }

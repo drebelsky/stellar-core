@@ -20,7 +20,6 @@ namespace stellar
 class ApplyLedgerStateSnapshot;
 
 class InvariantManagerImpl;
-class SorobanMetrics;
 
 // TTLData stores both liveUntilLedgerSeq and lastModifiedLedgerSeq for TTL
 // entries. This allows us to construct a LedgerEntry for TTLs without having to
@@ -396,7 +395,8 @@ class InMemorySorobanState
     // CONTRACT_CODE.
     void deleteContractCode(LedgerKey const& ledgerKey);
 
-    void reportMetrics(SorobanMetrics& metrics) const;
+    // Emit Tracy plots for the current in-memory state size.
+    void reportTracyPlots() const;
 
   public:
     InMemorySorobanState() = default;
@@ -448,8 +448,7 @@ class InMemorySorobanState
                 std::vector<LedgerEntry> const& liveEntries,
                 std::vector<LedgerKey> const& deadEntries,
                 LedgerHeader const& lh,
-                std::optional<SorobanNetworkConfig const> const& sorobanConfig,
-                SorobanMetrics& metrics);
+                std::optional<SorobanNetworkConfig const> const& sorobanConfig);
 
     // Should only be called in manual ledger close paths.
     void manuallyAdvanceLedgerHeader(LedgerHeader const& lh);

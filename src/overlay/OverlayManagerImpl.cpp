@@ -14,7 +14,6 @@
 #include "main/Application.h"
 #include "main/Config.h"
 #include "main/ErrorMessages.h"
-#include "overlay/OverlayMetrics.h"
 #include "overlay/PeerBareAddress.h"
 #include "overlay/PeerManager.h"
 #include "overlay/RandomPeerSource.h"
@@ -294,7 +293,6 @@ OverlayManagerImpl::OverlayManagerImpl(Application& app)
     , mDoor(mApp)
     , mAuth(mApp)
     , mShuttingDown(false)
-    , mOverlayMetrics(app)
     , mMessageCache(0xffff)
     , mTimer(app)
     , mPeerIPTimer(app)
@@ -1254,12 +1252,6 @@ std::set<Peer::pointer>
 OverlayManagerImpl::getPeersKnows(Hash const& h)
 {
     return mFloodGate.getPeersKnows(h);
-}
-
-OverlayMetrics&
-OverlayManagerImpl::getOverlayMetrics()
-{
-    return mOverlayMetrics;
 }
 
 PeerAuth&

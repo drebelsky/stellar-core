@@ -15,7 +15,6 @@ namespace stellar
 {
 
 class AppConnector;
-struct OverlayMetrics;
 
 struct SendMoreCapacity
 {
@@ -78,7 +77,6 @@ class FlowControl
     FlowControlByteCapacity
         mFlowControlBytesCapacity GUARDED_BY(mFlowControlMutex);
 
-    OverlayMetrics& mOverlayMetrics;
     AppConnector& mAppConnector;
     bool const mUseBackgroundThread;
 

@@ -6,7 +6,6 @@
 #include "bucket/BucketListSnapshot.h"
 #include "ledger/LedgerStateSnapshot.h"
 #include "ledger/LedgerTypeUtils.h"
-#include "ledger/SorobanMetrics.h"
 #include "util/GlobalChecks.h"
 #include <cstdint>
 #include <medida/counter.h>
@@ -537,8 +536,7 @@ InMemorySorobanState::updateState(
     std::vector<LedgerEntry> const& initEntries,
     std::vector<LedgerEntry> const& liveEntries,
     std::vector<LedgerKey> const& deadEntries, LedgerHeader const& lh,
-    std::optional<SorobanNetworkConfig const> const& sorobanConfig,
-    SorobanMetrics& metrics)
+    std::optional<SorobanNetworkConfig const> const& sorobanConfig)
 {
     // After initialization, we must apply every ledger in order to the
     // in-memory state with no gaps.
@@ -598,7 +596,7 @@ InMemorySorobanState::updateState(
     }
 
     checkUpdateInvariants();
-    reportMetrics(metrics);
+    reportTracyPlots();
 }
 
 void
@@ -625,7 +623,7 @@ InMemorySorobanState::getSize() const
 }
 
 void
-InMemorySorobanState::reportMetrics(SorobanMetrics&) const
+InMemorySorobanState::reportTracyPlots() const
 {
     TracyPlot("soroban.in-memory-state.contract-code-size",
               static_cast<int64_t>(mContractCodeStateSize));
