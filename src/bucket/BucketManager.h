@@ -106,26 +106,9 @@ class BucketManager : NonMovableOrCopyable
 #endif
 
     std::unique_ptr<std::string> mLockedBucketDir;
-    medida::Meter& mBucketLiveObjectInsertBatch;
-    medida::Meter& mBucketArchiveObjectInsertBatch;
-    medida::Timer& mBucketAddLiveBatch;
-    medida::Timer& mBucketAddArchiveBatch;
-    medida::Timer& mBucketSnapMerge;
-    medida::Counter& mSharedBucketsSize;
-    medida::Counter& mLiveBucketListSizeCounter;
-    medida::Counter& mArchiveBucketListSizeCounter;
-    medida::Meter& mCacheHitMeter;
-    medida::Meter& mCacheMissMeter;
-    medida::Counter& mLiveBucketIndexCacheEntries;
-    medida::Counter& mLiveBucketIndexCacheBytes;
-    EvictionMetrics mBucketListEvictionMetrics;
     MergeCounters mLiveMergeCounters;
     MergeCounters mHotArchiveMergeCounters;
     std::shared_ptr<EvictionStatistics> mEvictionStatistics{};
-    std::map<LedgerEntryTypeAndDurability, medida::Counter&>
-        mBucketListEntryCountCounters;
-    std::map<LedgerEntryTypeAndDurability, medida::Counter&>
-        mBucketListEntrySizeCounters;
 
     std::future<std::unique_ptr<EvictionResultCandidates>> mEvictionFuture{};
 
@@ -234,12 +217,11 @@ class BucketManager : NonMovableOrCopyable
     bool renameBucketDirFile(std::filesystem::path const& src,
                              std::filesystem::path const& dst);
 
+#ifdef BUILD_TESTS
     medida::Timer& getMergeTimer();
-
-    template <class BucketT> medida::Meter& getBloomMissMeter() const;
-    template <class BucketT> medida::Meter& getBloomLookupMeter() const;
     medida::Meter& getCacheHitMeter() const;
     medida::Meter& getCacheMissMeter() const;
+#endif
 
     // Reading and writing the merge counters is done in bulk, and takes a lock
     // briefly; this can be done from any thread.
@@ -350,9 +332,6 @@ class BucketManager : NonMovableOrCopyable
     resolveBackgroundEvictionScan(ApplyLedgerStateSnapshot const& lclSnapshot,
                                   AbstractLedgerTxn& ltx,
                                   LedgerKeySet const& modifiedKeys);
-
-    medida::Meter& getBloomMissMeter() const;
-    medida::Meter& getBloomLookupMeter() const;
 
 #ifdef BUILD_TESTS
     // Install a fake/assumed ledger version and bucket list hash to use in next

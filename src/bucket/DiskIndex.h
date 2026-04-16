@@ -109,9 +109,6 @@ template <class BucketT> class DiskIndex : public NonMovableOrCopyable
 
     } mData;
 
-    medida::Meter& mBloomLookupMeter;
-    medida::Meter& mBloomMissMeter;
-
     // Saves index to disk, overwriting any preexisting file for this index
     void saveToDisk(BucketManager& bm, Hash const& hash,
                     asio::io_context& ctx) const;

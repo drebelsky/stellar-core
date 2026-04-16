@@ -148,62 +148,7 @@ struct HostFunctionMetrics
     {
     }
 
-    ~HostFunctionMetrics()
-    {
-        if (mDisableMetrics)
-        {
-            return;
-        }
-
-        mMetrics.mHostFnOpReadEntry.Mark(mReadEntry);
-        mMetrics.mHostFnOpWriteEntry.Mark(mWriteEntry);
-
-        mMetrics.mHostFnOpReadKeyByte.Mark(mReadKeyByte);
-        mMetrics.mHostFnOpWriteKeyByte.Mark(mWriteKeyByte);
-
-        mMetrics.mHostFnOpReadLedgerByte.Mark(mLedgerReadByte);
-        mMetrics.mHostFnOpReadDataByte.Mark(mReadDataByte);
-        mMetrics.mHostFnOpReadCodeByte.Mark(mReadCodeByte);
-
-        mMetrics.mHostFnOpWriteLedgerByte.Mark(mLedgerWriteByte);
-        mMetrics.mHostFnOpWriteDataByte.Mark(mWriteDataByte);
-        mMetrics.mHostFnOpWriteCodeByte.Mark(mWriteCodeByte);
-
-        mMetrics.mHostFnOpEmitEvent.Mark(mEmitEvent);
-        mMetrics.mHostFnOpEmitEventByte.Mark(mEmitEventByte);
-
-        mMetrics.mHostFnOpCpuInsn.Mark(mCpuInsn);
-        mMetrics.mHostFnOpMemByte.Mark(mMemByte);
-        mMetrics.mHostFnOpInvokeTimeNsecs.Update(
-            std::chrono::nanoseconds(mInvokeTimeNsecs));
-        mMetrics.mHostFnOpCpuInsnExclVm.Mark(mCpuInsnExclVm);
-        mMetrics.mHostFnOpInvokeTimeNsecsExclVm.Update(
-            std::chrono::nanoseconds(mInvokeTimeNsecsExclVm));
-        mMetrics.mHostFnOpInvokeTimeFsecsCpuInsnRatio.Update(
-            mInvokeTimeNsecs * 1000000 / std::max(mCpuInsn, uint64_t(1)));
-        mMetrics.mHostFnOpInvokeTimeFsecsCpuInsnRatioExclVm.Update(
-            mInvokeTimeNsecsExclVm * 1000000 /
-            std::max(mCpuInsnExclVm, uint64_t(1)));
-        mMetrics.mHostFnOpDeclaredInsnsUsageRatio.Update(
-            mCpuInsn * 1000000 / std::max(mDeclaredCpuInsn, uint64_t(1)));
-
-        mMetrics.mHostFnOpMaxRwKeyByte.Mark(mMaxReadWriteKeyByte);
-        mMetrics.mHostFnOpMaxRwDataByte.Mark(mMaxReadWriteDataByte);
-        mMetrics.mHostFnOpMaxRwCodeByte.Mark(mMaxReadWriteCodeByte);
-        mMetrics.mHostFnOpMaxEmitEventByte.Mark(mMaxEmitEventByte);
-
-        mMetrics.accumulateModelledCpuInsns(mCpuInsn, mCpuInsnExclVm,
-                                            mInvokeTimeNsecs);
-
-        if (mSuccess)
-        {
-            mMetrics.mHostFnOpSuccess.Mark();
-        }
-        else
-        {
-            mMetrics.mHostFnOpFailure.Mark();
-        }
-    }
+    ~HostFunctionMetrics() = default;
 
     void
     noteDiskReadEntry(bool isCodeEntry, uint32_t keySize, uint32_t entrySize)
@@ -245,10 +190,6 @@ struct HostFunctionMetrics
     std::optional<medida::TimerContext>
     getExecTimer()
     {
-        if (!mDisableMetrics)
-        {
-            return mMetrics.mHostFnOpExec.TimeScope();
-        }
         return std::nullopt;
     }
 };

@@ -34,7 +34,6 @@ namespace stellar
 {
 
 class MetricsRegistry;
-struct EvictionMetrics;
 struct EvictionResultCandidates;
 struct EvictionResultEntry;
 struct InflationWinner;
@@ -96,12 +95,6 @@ template <class BucketT> class SearchableBucketListSnapshot
 
     std::reference_wrapper<MetricsRegistry> mMetrics;
 
-    // Bulk load timers take significantly longer, so the timer overhead is
-    // comparatively negligible.
-    mutable UnorderedMap<std::string, std::reference_wrapper<medida::Timer>>
-        mBulkTimers;
-    std::reference_wrapper<medida::Meter> mBulkLoadMeter;
-
     // Returns (lazily-constructed) file stream for bucket file. Note
     // this might be in some random position left over from a previous read --
     // must be seek()'ed before use.
@@ -132,9 +125,6 @@ template <class BucketT> class SearchableBucketListSnapshot
     std::optional<std::vector<typename BucketT::LoadT>>
     loadKeysInternal(std::set<LedgerKey, LedgerEntryIdCmp> const& inKeys,
                      std::optional<uint32_t> ledgerSeq) const;
-
-    medida::Timer& getBulkLoadTimer(std::string const& label,
-                                    size_t numEntries) const;
 
     // Iterate over all buckets in a snapshot in order, calling f on each
     // non-empty bucket. Exits early if function returns Loop::COMPLETE.
@@ -220,7 +210,7 @@ class SearchableLiveBucketListSnapshot
                                                       int64_t minBalance) const;
 
     std::unique_ptr<EvictionResultCandidates> scanForEviction(
-        uint32_t ledgerSeq, EvictionMetrics& metrics, EvictionIterator iter,
+        uint32_t ledgerSeq, EvictionIterator iter,
         std::shared_ptr<EvictionStatistics> stats,
         StateArchivalSettings const& sas, uint32_t ledgerVers) const;
 

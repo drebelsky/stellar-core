@@ -141,19 +141,6 @@ struct EvictedStateVectors
     std::vector<LedgerEntry> archivedEntries;
 };
 
-struct EvictionMetrics
-{
-    medida::Counter& entriesEvicted;
-    medida::Counter& bytesScannedForEviction;
-    medida::Counter& incompleteBucketScan;
-    medida::Counter& evictionCyclePeriod;
-    medida::Counter& averageEvictedEntryAge;
-    medida::Timer& blockingTime;
-    medida::Timer& backgroundTime;
-
-    EvictionMetrics(AppConnector& app);
-};
-
 class EvictionStatistics
 {
   private:
@@ -170,8 +157,7 @@ class EvictionStatistics
     // ledger when the entry is actually evicted
     void recordEvictedEntry(uint64_t age);
 
-    void submitMetricsAndRestartCycle(uint32_t currLedgerSeq,
-                                      EvictionMetrics& metrics);
+    void submitMetricsAndRestartCycle(uint32_t currLedgerSeq);
 };
 
 // Enum for more granular LedgerEntry types for Bucket metric reporting.

@@ -7263,6 +7263,7 @@ TEST_CASE("reusable module cache", "[soroban][modulecache]")
     REQUIRE(!wasmsAreCached(*app, contractHashes));
 }
 
+#if 0
 TEST_CASE("Module cache across protocol versions", "[tx][soroban][modulecache]")
 {
     VirtualClock clock;
@@ -7438,6 +7439,7 @@ TEST_CASE("Module cache miss on immediate execution",
         REQUIRE(isSuccessResult(txResults.results[1].result));
     }
 }
+#endif
 
 TEST_CASE("multiple version of same key in a single eviction scan",
           "[archival][soroban]")

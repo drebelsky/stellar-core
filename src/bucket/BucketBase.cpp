@@ -368,8 +368,8 @@ BucketBase<BucketT, IndexT>::merge(
         mc, maxProtocolVersion, oi, ni, shadowIterators, protocolVersion,
         keepShadowedLifecycleEntries);
 
-    auto timer = bucketManager.getMergeTimer().TimeScope();
     BucketMetadata meta;
+    (void)bucketManager;
     meta.ledgerVersion = protocolVersion;
 
     // If any inputs use the new extension of BucketMeta, the output should as

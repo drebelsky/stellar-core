@@ -31,12 +31,11 @@ class LiveBucketList : public BucketListBase<LiveBucket>
     static bool updateEvictionIterAndRecordStats(
         EvictionIterator& iter, EvictionIterator startIter,
         uint32_t configFirstScanLevel, uint32_t ledgerSeq,
-        std::shared_ptr<EvictionStatistics> stats, EvictionMetrics& metrics);
+        std::shared_ptr<EvictionStatistics> stats);
 
     static void checkIfEvictionScanIsStuck(EvictionIterator const& evictionIter,
                                            uint32_t scanSize,
-                                           std::shared_ptr<LiveBucket const> b,
-                                           EvictionMetrics& metrics);
+                                           std::shared_ptr<LiveBucket const> b);
 
     // Add a batch of initial (created), live (updated) and dead entries to the
     // bucketlist, representing the entries effected by closing

@@ -42,8 +42,6 @@ LiveBucketIndex::LiveBucketIndex(BucketManager& bm,
                                  std::filesystem::path const& filename,
                                  Hash const& hash, asio::io_context& ctx,
                                  SHA256* hasher)
-    : mCacheHitMeter(bm.getCacheHitMeter())
-    , mCacheMissMeter(bm.getCacheMissMeter())
 {
     ZoneScoped;
     releaseAssert(!filename.empty());
@@ -74,8 +72,6 @@ LiveBucketIndex::LiveBucketIndex(BucketManager const& bm, Archive& ar,
                                  std::streamoff pageSize)
 
     : mDiskIndex(std::make_unique<DiskIndex<LiveBucket>>(ar, bm, pageSize))
-    , mCacheHitMeter(bm.getCacheHitMeter())
-    , mCacheMissMeter(bm.getCacheMissMeter())
 {
     // Only disk indexes are serialized
     releaseAssertOrThrow(pageSize != 0);
@@ -86,8 +82,6 @@ LiveBucketIndex::LiveBucketIndex(BucketManager& bm,
                                  BucketMetadata const& metadata)
     : mInMemoryIndex(
           std::make_unique<InMemoryIndex>(bm, inMemoryState, metadata))
-    , mCacheHitMeter(bm.getCacheHitMeter())
-    , mCacheMissMeter(bm.getCacheMissMeter())
 {
 }
 
@@ -206,7 +200,6 @@ LiveBucketIndex::getCachedEntry(LedgerKey const& k) const
         auto cachePtr = mCache->maybeGet(k);
         if (cachePtr)
         {
-            mCacheHitMeter.Mark();
             return *cachePtr;
         }
 
@@ -348,10 +341,6 @@ LiveBucketIndex::maybeAddToCache(
         {
             return;
         }
-
-        // If we are adding an entry to the cache, we must have missed it
-        // earlier.
-        mCacheMissMeter.Mark();
 
         SharedLockExclusive lock(mCacheMutex);
         mCache->put(k, entry);

@@ -36,15 +36,11 @@ struct RestoreFootprintMetrics
     {
     }
 
-    ~RestoreFootprintMetrics()
-    {
-        mMetrics.mRestoreFpOpReadLedgerByte.Mark(mLedgerReadByte);
-        mMetrics.mRestoreFpOpWriteLedgerByte.Mark(mLedgerWriteByte);
-    }
-    medida::TimerContext
+    ~RestoreFootprintMetrics() = default;
+    std::optional<medida::TimerContext>
     getExecTimer()
     {
-        return mMetrics.mRestoreFpOpExec.TimeScope();
+        return std::nullopt;
     }
 };
 

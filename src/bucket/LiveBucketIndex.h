@@ -68,9 +68,6 @@ class LiveBucketIndex : public NonMovableOrCopyable
     mutable std::unique_ptr<CacheT> mCache GUARDED_BY(mCacheMutex){};
     mutable ANNOTATED_SHARED_MUTEX(mCacheMutex);
 
-    medida::Meter& mCacheHitMeter;
-    medida::Meter& mCacheMissMeter;
-
     static inline DiskIndex<LiveBucket>::IterT
     getDiskIter(IterT const& iter)
     {

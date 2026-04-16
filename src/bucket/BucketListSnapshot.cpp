@@ -68,8 +68,6 @@ SearchableBucketListSnapshot<BucketT>::SearchableBucketListSnapshot(
     , mHistoricalSnapshots(std::move(historicalSnapshots))
     , mLedgerSeq(ledgerSeq)
     , mMetrics(metrics)
-    , mBulkLoadMeter(
-          metrics.NewMeter({BucketT::METRIC_STRING, "query", "loads"}, "query"))
 {
 }
 
@@ -81,8 +79,6 @@ SearchableBucketListSnapshot<BucketT>::SearchableBucketListSnapshot(
     , mLedgerSeq(other.mLedgerSeq)
     // mStreams intentionally left empty — each copy gets its own stream cache
     , mMetrics(other.mMetrics)
-    , mBulkTimers(other.mBulkTimers)
-    , mBulkLoadMeter(other.mBulkLoadMeter)
 {
 }
 
@@ -98,8 +94,6 @@ SearchableBucketListSnapshot<BucketT>::operator=(
         mLedgerSeq = other.mLedgerSeq;
         mStreams.clear();
         mMetrics = other.mMetrics;
-        mBulkTimers = other.mBulkTimers;
-        mBulkLoadMeter = other.mBulkLoadMeter;
     }
     return *this;
 }
@@ -371,26 +365,6 @@ SearchableBucketListSnapshot<BucketT>::loadKeysFromLedger(
     return loadKeysInternal(inKeys, ledgerSeq);
 }
 
-template <class BucketT>
-medida::Timer&
-SearchableBucketListSnapshot<BucketT>::getBulkLoadTimer(
-    std::string const& label, size_t numEntries) const
-{
-    if (numEntries != 0)
-    {
-        mBulkLoadMeter.get().Mark(numEntries);
-    }
-
-    auto iter = mBulkTimers.find(label);
-    if (iter == mBulkTimers.end())
-    {
-        auto& metric =
-            mMetrics.get().NewTimer({BucketT::METRIC_STRING, "bulk", label});
-        iter = mBulkTimers.emplace(label, metric).first;
-    }
-
-    return iter->second.get();
-}
 
 template <class BucketT>
 std::shared_ptr<BucketListSnapshotData<BucketT> const> const&
@@ -428,7 +402,7 @@ SearchableLiveBucketListSnapshot::loadKeys(
     std::set<LedgerKey, LedgerEntryIdCmp> const& inKeys,
     std::string const& label) const
 {
-    auto timer = getBulkLoadTimer(label, inKeys.size()).TimeScope();
+    (void)label;
     auto op = loadKeysInternal(inKeys, std::nullopt);
     releaseAssertOrThrow(op);
     return std::move(*op);
@@ -466,10 +440,6 @@ SearchableLiveBucketListSnapshot::loadPoolShareTrustLinesByAccountAndAsset(
 
     loopAllBuckets(trustLineLoop);
 
-    auto timer =
-        getBulkLoadTimer("poolshareTrustlines", trustlinesToLoad.size())
-            .TimeScope();
-
     std::vector<LedgerEntry> result;
     auto loadKeysLoop = [&](std::shared_ptr<LiveBucket const> const& bucket) {
         loadKeysFromBucket(bucket, trustlinesToLoad, result);
@@ -487,8 +457,6 @@ SearchableLiveBucketListSnapshot::loadInflationWinners(size_t maxWinners,
 {
     ZoneScoped;
     releaseAssert(mData);
-
-    auto timer = getBulkLoadTimer("inflationWinners", 0).TimeScope();
 
     UnorderedMap<AccountID, int64_t> voteCount;
     UnorderedSet<AccountID> seen;
@@ -580,7 +548,7 @@ SearchableLiveBucketListSnapshot::loadInflationWinners(size_t maxWinners,
 //    We scan both versions but should only evict once.
 std::unique_ptr<EvictionResultCandidates>
 SearchableLiveBucketListSnapshot::scanForEviction(
-    uint32_t ledgerSeq, EvictionMetrics& metrics, EvictionIterator evictionIter,
+    uint32_t ledgerSeq, EvictionIterator evictionIter,
     std::shared_ptr<EvictionStatistics> stats, StateArchivalSettings const& sas,
     uint32_t ledgerVers) const
 {
@@ -608,7 +576,7 @@ SearchableLiveBucketListSnapshot::scanForEviction(
     {
         auto bucket = getBucketFromIter(evictionIter);
         LiveBucketList::checkIfEvictionScanIsStuck(
-            evictionIter, sas.evictionScanSize, bucket, metrics);
+            evictionIter, sas.evictionScanSize, bucket);
 
         // If we scan scanSize bytes before hitting bucket EOF, exit early
         if (scanForEvictionInBucket(bucket, evictionIter, scanSize, ledgerSeq,
@@ -621,7 +589,7 @@ SearchableLiveBucketListSnapshot::scanForEviction(
         // If we return back to the Bucket we started at, exit
         if (LiveBucketList::updateEvictionIterAndRecordStats(
                 evictionIter, startIter, sas.startingEvictionScanLevel,
-                ledgerSeq, stats, metrics))
+                ledgerSeq, stats))
         {
             break;
         }

@@ -301,8 +301,6 @@ class LedgerManagerImpl : public LedgerManager
     ANNOTATED_RECURSIVE_MUTEX(mLedgerStateMutex,
                               ACQUIRED_BEFORE(BucketManager::mBucketMutex));
 
-    medida::Timer& mCatchupDuration;
-
     std::unique_ptr<LedgerCloseMetaFrame> mNextMetaToEmit;
 
     // Use in the context of parallel ledger apply to indicate background thread

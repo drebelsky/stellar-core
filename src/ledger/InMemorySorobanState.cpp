@@ -625,12 +625,8 @@ InMemorySorobanState::getSize() const
 }
 
 void
-InMemorySorobanState::reportMetrics(SorobanMetrics& metrics) const
+InMemorySorobanState::reportMetrics(SorobanMetrics&) const
 {
-    metrics.mContractCodeStateSize.set_count(mContractCodeStateSize);
-    metrics.mContractDataStateSize.set_count(mContractDataStateSize);
-    metrics.mContractCodeEntryCount.set_count(mContractCodeEntries.size());
-    metrics.mContractDataEntryCount.set_count(mContractDataEntries.size());
     TracyPlot("soroban.in-memory-state.contract-code-size",
               static_cast<int64_t>(mContractCodeStateSize));
     TracyPlot("soroban.in-memory-state.contract-data-size",

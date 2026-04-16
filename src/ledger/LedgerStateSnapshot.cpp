@@ -474,13 +474,12 @@ LedgerStateSnapshot::loadInflationWinners(size_t maxWinners,
 
 std::unique_ptr<EvictionResultCandidates>
 LedgerStateSnapshot::scanForEviction(uint32_t ledgerSeq,
-                                     EvictionMetrics& metrics,
                                      EvictionIterator iter,
                                      std::shared_ptr<EvictionStatistics> stats,
                                      StateArchivalSettings const& sas,
                                      uint32_t ledgerVers) const
 {
-    return mLiveSnapshot.scanForEviction(ledgerSeq, metrics, std::move(iter),
+    return mLiveSnapshot.scanForEviction(ledgerSeq, std::move(iter),
                                          std::move(stats), sas, ledgerVers);
 }
 

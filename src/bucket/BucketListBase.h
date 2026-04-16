@@ -348,7 +348,6 @@ class Application;
 class Bucket;
 struct BucketEntryCounters;
 class Config;
-struct EvictionMetrics;
 struct InflationWinner;
 
 namespace testutil

@@ -21,7 +21,6 @@ class LedgerSnapshot;
 class ApplyLedgerStateSnapshot;
 class CompleteConstLedgerState;
 class EvictionStatistics;
-struct EvictionMetrics;
 struct EvictionResultCandidates;
 struct InflationWinner;
 struct StateArchivalSettings;
@@ -156,7 +155,7 @@ class LedgerStateSnapshot
     std::vector<InflationWinner> loadInflationWinners(size_t maxWinners,
                                                       int64_t minBalance) const;
     std::unique_ptr<EvictionResultCandidates> scanForEviction(
-        uint32_t ledgerSeq, EvictionMetrics& metrics, EvictionIterator iter,
+        uint32_t ledgerSeq, EvictionIterator iter,
         std::shared_ptr<EvictionStatistics> stats,
         StateArchivalSettings const& sas, uint32_t ledgerVers) const;
     void scanLiveEntriesOfType(

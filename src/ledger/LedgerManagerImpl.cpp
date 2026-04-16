@@ -314,8 +314,6 @@ LedgerManagerImpl::LedgerManagerImpl(Application& app)
     , mApplyState(app)
     , mNumHistoricalSnapshots(app.getConfig().QUERY_SNAPSHOT_LEDGERS)
     , mLastClose(mApp.getClock().now())
-    , mCatchupDuration(
-          app.getMetrics().NewTimer({"ledger", "catchup", "duration"}))
     , mState(LM_BOOTING_STATE)
 {
     // At this point, we haven't called assumeState yet, so the BucketLists are
@@ -956,12 +954,6 @@ LedgerManagerImpl::ApplyState::finishPendingCompilation()
     assertWritablePhase();
     releaseAssert(mCompiler);
     auto newCache = mCompiler->wait();
-    getMetrics().mSorobanMetrics.mModuleCacheRebuildBytes.set_count(
-        (int64)mCompiler->getBytesCompiled());
-    getMetrics().mSorobanMetrics.mModuleCacheNumEntries.set_count(
-        (int64)mCompiler->getContractsCompiled());
-    getMetrics().mSorobanMetrics.mModuleCacheRebuildTime.Update(
-        mCompiler->getCompileTime());
     mModuleCache.swap(newCache);
     mCompiler.reset();
 }
@@ -1115,9 +1107,9 @@ LedgerManagerImpl::ApplyState::maybeRebuildModuleCache(
         auto const& param = memParams[(size_t)stellar::VmInstantiation];
         linearTerm = param.linearTerm;
     }
-    auto lastBytesCompiled =
-        getMetrics().mSorobanMetrics.mModuleCacheRebuildBytes.count();
-    uint64_t limit = 2 * lastBytesCompiled * linearTerm / scale;
+    uint64_t limit = 0;
+    (void)linearTerm;
+    (void)scale;
 
     for (auto const& v : mModuleCacheProtocols)
     {
@@ -1137,43 +1129,6 @@ LedgerManagerImpl::ApplyState::maybeRebuildModuleCache(
 void
 LedgerManagerImpl::publishSorobanMetrics()
 {
-    if (!hasLastClosedSorobanNetworkConfig())
-    {
-        return;
-    }
-    auto const& conf = getLastClosedSorobanNetworkConfig();
-    auto& m = getSorobanMetrics();
-    // first publish the network config limits
-    m.mConfigContractDataKeySizeBytes.set_count(
-        conf.maxContractDataKeySizeBytes());
-    m.mConfigMaxContractDataEntrySizeBytes.set_count(
-        conf.maxContractDataEntrySizeBytes());
-    m.mConfigMaxContractSizeBytes.set_count(conf.maxContractSizeBytes());
-    m.mConfigTxMaxSizeByte.set_count(conf.txMaxSizeBytes());
-    m.mConfigTxMaxCpuInsn.set_count(conf.txMaxInstructions());
-    m.mConfigTxMemoryLimitBytes.set_count(conf.txMemoryLimit());
-    m.mConfigTxMaxDiskReadEntries.set_count(conf.txMaxDiskReadEntries());
-    m.mConfigTxMaxDiskReadBytes.set_count(conf.txMaxDiskReadBytes());
-    m.mConfigTxMaxWriteLedgerEntries.set_count(conf.txMaxWriteLedgerEntries());
-    m.mConfigTxMaxWriteBytes.set_count(conf.txMaxWriteBytes());
-    m.mConfigMaxContractEventsSizeBytes.set_count(
-        conf.txMaxContractEventsSizeBytes());
-    m.mConfigLedgerMaxTxCount.set_count(conf.ledgerMaxTxCount());
-    m.mConfigLedgerMaxInstructions.set_count(conf.ledgerMaxInstructions());
-    m.mConfigLedgerMaxTxsSizeByte.set_count(
-        conf.ledgerMaxTransactionSizesBytes());
-    m.mConfigLedgerMaxDiskReadEntries.set_count(
-        conf.ledgerMaxDiskReadEntries());
-    m.mConfigLedgerMaxDiskReadBytes.set_count(conf.ledgerMaxDiskReadBytes());
-    m.mConfigLedgerMaxWriteEntries.set_count(
-        conf.ledgerMaxWriteLedgerEntries());
-    m.mConfigLedgerMaxWriteBytes.set_count(conf.ledgerMaxWriteBytes());
-    m.mConfigBucketListTargetSizeByte.set_count(
-        conf.sorobanStateTargetSizeBytes());
-    m.mConfigFeeWrite1KB.set_count(conf.feeRent1KB());
-
-    // then publish the actual ledger usage
-    m.publishAndResetLedgerWideMetrics();
 }
 
 // called by txherder
@@ -3069,7 +3024,6 @@ LedgerManagerImpl::ApplyState::evictFromModuleCache(
             CLOG_DEBUG(Ledger, "evicting {} from module cache", binToHex(hash));
             ::rust::Slice<uint8_t const> slice{hash.data(), hash.size()};
             mModuleCache->evict_contract_code(slice);
-            getMetrics().mSorobanMetrics.mModuleCacheNumEntries.dec();
         }
     }
 }
@@ -3094,10 +3048,6 @@ LedgerManagerImpl::ApplyState::addAnyContractsToModuleCache(
                                binToHex(sha256(wasm)), v);
                     auto slice =
                         rust::Slice<uint8_t const>(wasm.data(), wasm.size());
-                    getMetrics().mSorobanMetrics.mModuleCacheNumEntries.inc();
-                    auto timer =
-                        getMetrics()
-                            .mSorobanMetrics.mModuleCompilationTime.TimeScope();
                     mModuleCache->compile(v, slice);
                 }
             }

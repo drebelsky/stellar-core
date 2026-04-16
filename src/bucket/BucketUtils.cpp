@@ -168,24 +168,6 @@ EvictionResultCandidates::isValid(uint32_t currLedgerSeq,
                currSas.startingEvictionScanLevel;
 }
 
-EvictionMetrics::EvictionMetrics(AppConnector& app)
-    : entriesEvicted(app.getMetrics().NewCounter(
-          {"state-archival", "eviction", "entries-evicted"}))
-    , bytesScannedForEviction(app.getMetrics().NewCounter(
-          {"state-archival", "eviction", "bytes-scanned"}))
-    , incompleteBucketScan(app.getMetrics().NewCounter(
-          {"state-archival", "eviction", "incomplete-scan"}))
-    , evictionCyclePeriod(
-          app.getMetrics().NewCounter({"state-archival", "eviction", "period"}))
-    , averageEvictedEntryAge(
-          app.getMetrics().NewCounter({"state-archival", "eviction", "age"}))
-    , blockingTime(app.getMetrics().NewTimer(
-          {"state-archival", "eviction", "blocking-time"}))
-    , backgroundTime(app.getMetrics().NewTimer(
-          {"state-archival", "eviction", "background-time"}))
-{
-}
-
 void
 EvictionStatistics::recordEvictedEntry(uint64_t age)
 {
@@ -195,22 +177,9 @@ EvictionStatistics::recordEvictedEntry(uint64_t age)
 }
 
 void
-EvictionStatistics::submitMetricsAndRestartCycle(uint32_t currLedgerSeq,
-                                                 EvictionMetrics& metrics)
+EvictionStatistics::submitMetricsAndRestartCycle(uint32_t currLedgerSeq)
 {
     std::lock_guard l(mLock);
-
-    // Only record metrics if we've seen a complete cycle to avoid noise
-    if (mCompleteCycle)
-    {
-        metrics.evictionCyclePeriod.set_count(currLedgerSeq -
-                                              mEvictionCycleStartLedger);
-
-        auto averageAge = mNumEntriesEvicted == 0
-                              ? 0
-                              : mEvictedEntriesAgeSum / mNumEntriesEvicted;
-        metrics.averageEvictedEntryAge.set_count(averageAge);
-    }
 
     // Reset to start new cycle
     mCompleteCycle = true;

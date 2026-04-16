@@ -34,14 +34,11 @@ struct ExtendFootprintTTLMetrics
     {
     }
 
-    ~ExtendFootprintTTLMetrics()
-    {
-        mMetrics.mExtFpTtlOpReadLedgerByte.Mark(mLedgerReadByte);
-    }
-    medida::TimerContext
+    ~ExtendFootprintTTLMetrics() = default;
+    std::optional<medida::TimerContext>
     getExecTimer()
     {
-        return mMetrics.mExtFpTtlOpExec.TimeScope();
+        return std::nullopt;
     }
 };
 

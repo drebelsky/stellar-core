@@ -72,7 +72,6 @@ DiskIndex<BucketT>::scan(IterT start, LedgerKey const& k) const
 
     // If the key is not in the bloom filter or in the lower bounded index
     // entry, return nullopt
-    mBloomLookupMeter.Mark();
     if ((mData.filter && !mData.filter->contains(k)) ||
         keyIter == mData.keysToOffset.end() ||
         keyNotInIndexEntry(k, keyIter->first))
@@ -134,9 +133,8 @@ DiskIndex<BucketT>::DiskIndex(BucketManager& bm,
                               std::filesystem::path const& filename,
                               std::streamoff pageSize, Hash const& hash,
                               asio::io_context& ctx, SHA256* hasher)
-    : mBloomLookupMeter(bm.getBloomLookupMeter<BucketT>())
-    , mBloomMissMeter(bm.getBloomMissMeter<BucketT>())
 {
+    (void)bm;
     ZoneScoped;
     mData.pageSize = pageSize;
 
@@ -272,9 +270,8 @@ template <class BucketT>
 template <class Archive>
 DiskIndex<BucketT>::DiskIndex(Archive& ar, BucketManager const& bm,
                               std::streamoff pageSize)
-    : mBloomLookupMeter(bm.getBloomLookupMeter<BucketT>())
-    , mBloomMissMeter(bm.getBloomMissMeter<BucketT>())
 {
+    (void)bm;
     releaseAssertOrThrow(pageSize != 0);
     mData.pageSize = pageSize;
     ar(mData);
@@ -344,7 +341,6 @@ template <class BucketT>
 void
 DiskIndex<BucketT>::markBloomMiss() const
 {
-    mBloomMissMeter.Mark();
 }
 
 #ifdef BUILD_TESTS
