@@ -1282,7 +1282,6 @@ LoadGenerator::execute(TransactionFrameBasePtr txf, LoadGenMode mode,
                        TransactionResultCode& code)
 {
     TxMetrics txm(mApp.getMetrics());
-    (void)mode;
     txm.mTxnAttempted.Mark();
 
     auto msg = txf->toStellarMessage();

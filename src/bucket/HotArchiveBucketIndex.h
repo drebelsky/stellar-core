@@ -109,11 +109,6 @@ class HotArchiveBucketIndex : public NonMovableOrCopyable
         return mDiskIndex.end();
     }
 
-    void
-    markBloomMiss() const
-    {
-        mDiskIndex.markBloomMiss();
-    }
 #ifdef BUILD_TESTS
     bool operator==(HotArchiveBucketIndex const& in) const;
 #endif

@@ -369,7 +369,6 @@ BucketBase<BucketT, IndexT>::merge(
         keepShadowedLifecycleEntries);
 
     BucketMetadata meta;
-    (void)bucketManager;
     meta.ledgerVersion = protocolVersion;
 
     // If any inputs use the new extension of BucketMeta, the output should as

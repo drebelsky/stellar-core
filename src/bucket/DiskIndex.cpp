@@ -134,7 +134,6 @@ DiskIndex<BucketT>::DiskIndex(BucketManager& bm,
                               std::streamoff pageSize, Hash const& hash,
                               asio::io_context& ctx, SHA256* hasher)
 {
-    (void)bm;
     ZoneScoped;
     mData.pageSize = pageSize;
 
@@ -268,10 +267,8 @@ DiskIndex<BucketT>::DiskIndex(BucketManager& bm,
 
 template <class BucketT>
 template <class Archive>
-DiskIndex<BucketT>::DiskIndex(Archive& ar, BucketManager const& bm,
-                              std::streamoff pageSize)
+DiskIndex<BucketT>::DiskIndex(Archive& ar, std::streamoff pageSize)
 {
-    (void)bm;
     releaseAssertOrThrow(pageSize != 0);
     mData.pageSize = pageSize;
     ar(mData);
@@ -337,11 +334,6 @@ DiskIndex<BucketT>::saveToDisk(BucketManager& bm, Hash const& hash,
     }
 }
 
-template <class BucketT>
-void
-DiskIndex<BucketT>::markBloomMiss() const
-{
-}
 
 #ifdef BUILD_TESTS
 template <class BucketT>
@@ -404,9 +396,7 @@ template class DiskIndex<HotArchiveBucket>;
 template class DiskIndex<LiveBucket>;
 
 template DiskIndex<HotArchiveBucket>::DiskIndex(cereal::BinaryInputArchive& ar,
-                                                BucketManager const& bm,
                                                 std::streamoff pageSize);
 template DiskIndex<LiveBucket>::DiskIndex(cereal::BinaryInputArchive& ar,
-                                          BucketManager const& bm,
                                           std::streamoff pageSize);
 }

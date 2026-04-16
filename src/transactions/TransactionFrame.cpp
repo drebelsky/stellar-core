@@ -2433,7 +2433,6 @@ TransactionFrame::applyOperations(
     }
     // This is only reachable if an exception is thrown
     txResult.setInnermostError(txINTERNAL_ERROR);
-    (void)reportInternalErrOnException;
     return false;
 }
 

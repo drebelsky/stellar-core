@@ -325,24 +325,6 @@ FutureBucket<BucketT>::getOutputHash() const
 }
 
 template <class BucketT>
-static std::chrono::seconds
-getAvailableTimeForMerge(Application& app, uint32_t level)
-{
-    // FutureBucket is managed by a background thread that is not related to the
-    // rest of the core state machine such that getting the current value of a
-    // network config is non-trivial. This isn't super important, so we use a
-    // conservative hardcoded lower bound instead.
-    auto closeTime = std::chrono::seconds(
-        MinimumSorobanNetworkConfig::LEDGER_TARGET_CLOSE_TIME_MILLISECONDS /
-        1000);
-    if (level >= 1)
-    {
-        return closeTime * BucketListBase<BucketT>::levelHalf(level - 1);
-    }
-    return closeTime;
-}
-
-template <class BucketT>
 void
 FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
                                   bool countMergeEvents, uint32_t level)
@@ -403,13 +385,11 @@ FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
     }
     asio::io_context& ctx = app.getWorkerIOContext();
     bool doFsync = !app.getConfig().DISABLE_XDR_FSYNC;
-    std::chrono::seconds availableTime =
-        getAvailableTimeForMerge<BucketT>(app, level);
 
     using task_t = std::packaged_task<std::shared_ptr<BucketT>()>;
     std::shared_ptr<task_t> task = std::make_shared<task_t>(
         [curr, snap, &bm, shadows, maxProtocolVersion, countMergeEvents, level,
-         &ctx, doFsync, availableTime]() mutable {
+         &ctx, doFsync]() mutable {
             CLOG_TRACE(Bucket, "Worker merging curr={} with snap={}",
                        hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()));
 
@@ -428,7 +408,6 @@ FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
                     CLOG_TRACE(
                         Bucket, "Worker finished merging curr={} with snap={}",
                         hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()));
-                    (void)availableTime;
                 }
 
                 return res;

@@ -682,7 +682,7 @@ PendingEnvelopes::eraseOutsideRange(std::optional<uint64> minSlot,
         if (*minSlot > 0)
         {
             // report only for the highest non-future slot that we're purging
-            reportCostOutliersForSlot(*minSlot - 1, true);
+            reportCostOutliersForSlot(*minSlot - 1);
         }
 
         for (auto iter = mEnvelopes.begin(); iter != mEnvelopes.end();)
@@ -922,8 +922,7 @@ shouldReportCostOutlier(double possibleOutlierCost, double expectedCost,
 }
 
 void
-PendingEnvelopes::reportCostOutliersForSlot(int64_t slotIndex,
-                                            bool updateMetrics) const
+PendingEnvelopes::reportCostOutliersForSlot(int64_t slotIndex) const
 {
     ZoneScoped;
 
@@ -937,15 +936,12 @@ PendingEnvelopes::reportCostOutliersForSlot(int64_t slotIndex,
     }
 
     std::vector<double> myValidatorsTrackedCost;
-    double totalCost = 0;
 
     for (auto const& t : tracked)
     {
         if (t.second > 0)
         {
-            double cost = static_cast<double>(t.second);
-            myValidatorsTrackedCost.push_back(cost);
-            totalCost += cost;
+            myValidatorsTrackedCost.push_back(static_cast<double>(t.second));
         }
     }
 
@@ -988,9 +984,6 @@ PendingEnvelopes::reportCostOutliersForSlot(int64_t slotIndex,
             }
         }
     }
-
-    (void)updateMetrics;
-    (void)totalCost;
 }
 
 Json::Value

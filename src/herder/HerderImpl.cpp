@@ -2614,8 +2614,7 @@ HerderImpl::herderOutOfSync()
     lostSync();
 
     releaseAssert(getState() == Herder::HERDER_SYNCING_STATE);
-    mPendingEnvelopes.reportCostOutliersForSlot(trackingConsensusLedgerIndex(),
-                                                false);
+    mPendingEnvelopes.reportCostOutliersForSlot(trackingConsensusLedgerIndex());
 
     startOutOfSyncTimer();
 

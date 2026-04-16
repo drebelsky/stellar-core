@@ -42,10 +42,9 @@ HotArchiveBucketIndex::getPageSize(Config const& cfg, size_t bucketSize)
 }
 
 template <class Archive>
-HotArchiveBucketIndex::HotArchiveBucketIndex(BucketManager const& bm,
-                                             Archive& ar,
+HotArchiveBucketIndex::HotArchiveBucketIndex(BucketManager const&, Archive& ar,
                                              std::streamoff pageSize)
-    : mDiskIndex(ar, bm, pageSize)
+    : mDiskIndex(ar, pageSize)
 {
     // HotArchive only supports disk indexes
     releaseAssertOrThrow(pageSize != 0);

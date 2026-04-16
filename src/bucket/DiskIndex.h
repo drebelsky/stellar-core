@@ -124,7 +124,7 @@ template <class BucketT> class DiskIndex : public NonMovableOrCopyable
     // Constructor for loading pre-existing index from disk. Must call preLoad
     // before calling this constructor to properly deserialize index.
     template <class Archive>
-    DiskIndex(Archive& ar, BucketManager const& bm, std::streamoff pageSize);
+    DiskIndex(Archive& ar, std::streamoff pageSize);
 
     // Begins searching for LegerKey k from start.
     // Returns pair of:
@@ -189,7 +189,6 @@ template <class BucketT> class DiskIndex : public NonMovableOrCopyable
         return *mData.assetToPoolID;
     }
 
-    void markBloomMiss() const;
 
 #ifdef BUILD_TESTS
     bool operator==(DiskIndex<BucketT> const& inRaw) const;

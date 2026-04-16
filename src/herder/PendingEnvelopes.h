@@ -206,7 +206,7 @@ class PendingEnvelopes
     // updates internal state when an envelope was successfully processed
     void envelopeProcessed(SCPEnvelope const& env);
 
-    void reportCostOutliersForSlot(int64_t slotIndex, bool updateMetrics) const;
+    void reportCostOutliersForSlot(int64_t slotIndex) const;
     Json::Value getJsonValidatorCost(bool summary, bool fullKeys,
                                      uint64 index) const;
 };

@@ -44,8 +44,7 @@ LedgerTxnRoot::Impl::loadOffer(LedgerKey const& key) const
     st.exchange(soci::use(actIDStrKey));
     st.exchange(soci::use(offerID));
 
-    std::vector<LedgerEntry> offers = loadOffers(prep);
-
+    auto offers = loadOffers(prep);
     return offers.empty() ? nullptr
                           : std::make_shared<LedgerEntry const>(offers.front());
 }
@@ -58,9 +57,7 @@ LedgerTxnRoot::Impl::loadAllOffers() const
                       "amount, pricen, priced, flags, lastmodified, extension, "
                       "ledgerext FROM offers";
     auto prep = mApp.getDatabase().getPreparedStatement(sql, getSession());
-
-    std::vector<LedgerEntry> offers = loadOffers(prep);
-    return offers;
+    return loadOffers(prep);
 }
 
 std::deque<LedgerEntry>::const_iterator
@@ -219,8 +216,7 @@ LedgerTxnRoot::Impl::loadOffersByAccountAndAsset(AccountID const& accountID,
     st.exchange(soci::use(assetStr));
     st.exchange(soci::use(assetStr));
 
-    std::vector<LedgerEntry> offers = loadOffers(prep);
-    return offers;
+    return loadOffers(prep);
 }
 
 static Asset

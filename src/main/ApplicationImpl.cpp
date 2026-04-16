@@ -1492,10 +1492,8 @@ ApplicationImpl::postOnMainThread(std::function<void()>&& f, std::string&& name,
                                   Scheduler::ActionType type)
 {
     JITTER_INJECT_DELAY();
-    LogSlowExecution isSlow{name, LogSlowExecution::Mode::MANUAL,
-                            "executed after"};
     mVirtualClock.postAction(
-        [this, f = std::move(f), isSlow]() {
+        [this, f = std::move(f)]() {
             JITTER_INJECT_DELAY();
             auto sleepFor =
                 this->getConfig().ARTIFICIALLY_SLEEP_MAIN_THREAD_FOR_TESTING;
@@ -1513,11 +1511,8 @@ ApplicationImpl::postOnBackgroundThread(std::function<void()>&& f,
                                         std::string jobName)
 {
     JITTER_INJECT_DELAY();
-    LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
-                            "executed after"};
-    asio::post(getWorkerIOContext(), [f = std::move(f), isSlow]() {
+    asio::post(getWorkerIOContext(), [f = std::move(f)]() {
         JITTER_INJECT_DELAY();
-        (void)isSlow;
         f();
     });
 }
@@ -1527,12 +1522,8 @@ ApplicationImpl::postOnEvictionBackgroundThread(std::function<void()>&& f,
                                                 std::string jobName)
 {
     JITTER_INJECT_DELAY();
-
-    LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
-                            "executed after"};
-    asio::post(getEvictionIOContext(), [f = std::move(f), isSlow]() {
+    asio::post(getEvictionIOContext(), [f = std::move(f)]() {
         JITTER_INJECT_DELAY();
-        (void)isSlow;
         f();
     });
 }
@@ -1543,11 +1534,8 @@ ApplicationImpl::postOnOverlayThread(std::function<void()>&& f,
 {
     JITTER_INJECT_DELAY();
     releaseAssert(mOverlayIOContext);
-    LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
-                            "executed after"};
-    asio::post(*mOverlayIOContext, [f = std::move(f), isSlow]() {
+    asio::post(*mOverlayIOContext, [f = std::move(f)]() {
         JITTER_INJECT_DELAY();
-        (void)isSlow;
         f();
     });
 }
@@ -1559,11 +1547,8 @@ ApplicationImpl::postOnLedgerCloseThread(std::function<void()>&& f,
     JITTER_INJECT_DELAY();
     releaseAssert(mLedgerCloseIOContext);
     getClock().newBackgroundWork();
-    LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
-                            "executed after"};
-    asio::post(*mLedgerCloseIOContext, [this, f = std::move(f), isSlow]() {
+    asio::post(*mLedgerCloseIOContext, [this, f = std::move(f)]() {
         JITTER_INJECT_DELAY();
-        (void)isSlow;
         try
         {
             f();

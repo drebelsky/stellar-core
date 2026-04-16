@@ -99,18 +99,16 @@ template <class BucketT> class SearchableBucketListSnapshot
     XDRInputFileStream&
     getStream(std::shared_ptr<BucketT const> const& bucket) const;
 
-    // Loads the bucket entry for LedgerKey k. Starts at file offset pos and
-    // reads until key is found or the end of the page. Returns <BucketEntry,
-    // bloomMiss>, where bloomMiss is true if a bloomMiss occurred during the
-    // load.
-    std::pair<std::shared_ptr<typename BucketT::EntryT const>, bool>
+    // Loads the bucket entry for LedgerKey k from the given file offset, or
+    // returns nullptr if the bloom filter gave a false positive.
+    std::shared_ptr<typename BucketT::EntryT const>
     getEntryAtOffset(std::shared_ptr<BucketT const> const& bucket,
                      LedgerKey const& k, std::streamoff pos,
                      size_t pageSize) const;
 
-    // Loads bucket entry for LedgerKey k. Returns <BucketEntry, bloomMiss>,
-    // where bloomMiss is true if a bloomMiss occurred during the load.
-    std::pair<std::shared_ptr<typename BucketT::EntryT const>, bool>
+    // Loads the bucket entry for LedgerKey k, or returns nullptr if k is not
+    // in this bucket.
+    std::shared_ptr<typename BucketT::EntryT const>
     getBucketEntry(std::shared_ptr<BucketT const> const& bucket,
                    LedgerKey const& k) const;
 

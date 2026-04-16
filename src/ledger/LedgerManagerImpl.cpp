@@ -1042,64 +1042,17 @@ LedgerManagerImpl::ApplyState::maybeRebuildModuleCache(
     uint32_t minLedgerVersion)
 {
     assertCommittingPhase();
-    auto snap = copyLedgerStateSnapshot();
 
-    // There is (currently) a grow-only arena underlying the module cache, so as
-    // entries are uploaded and evicted that arena will still grow. To cap this
-    // growth, we periodically rebuild the module cache from scratch.
-    //
-    // We could pick various size caps, but we want to avoid rebuilding
-    // spuriously when there just happens to be "a fairly large" cache due to
-    // having a fairly large live BL. I.e. we want to allow it to get as big as
-    // we can -- or as big as the "natural" BL-limits-dictated size -- while
-    // still rebuilding fairly often in DoS-attempt scenarios or just generally
-    // if there's regular upload/expiry churn that would otherwise cause
-    // unbounded growth.
-    //
-    // Unfortunately we do not know exactly how much memory is used by each byte
-    // of contract we compile, and the size estimates from the cost model have
-    // to assume a worst case which is almost a factor of _40_ larger than the
-    // byte-size of the contracts. So for example if we assume 100MB of
-    // contracts, the cost model says we ought to budget for 4GB of memory, just
-    // in case _all 100MB of contracts_ are "the worst case contract" that's
-    // just a continuous stream of function definitions.
-    //
-    // So: we take this multiplier, times the size of the contracts we _last_
-    // drew from the BL when doing a full recompile, times two, as a cap on the
-    // _current_ (post-rebuild, currently-growing) cache's budget-tracked
-    // memory. This should avoid rebuilding spuriously, while still treating
-    // events that double the size of the contract-set in the live BL as an
-    // event that warrants a rebuild.
-
-    // We try to fish the current cost multiplier out of the soroban network
-    // config's memory cost model, but fall back to a conservative default in
-    // case there is no mem cost param for VmInstantiation (This should never
-    // happen but just in case).
-    uint64_t linearTerm = 5000;
-
-    // linearTerm is in 1/128ths in the cost model, to reduce rounding error.
-    uint64_t scale = 128;
-    LedgerSnapshot lsForConfig(snap);
-    auto sorobanConfig = SorobanNetworkConfig::loadFromLedger(lsForConfig);
-    auto const& memParams = sorobanConfig.memCostParams();
-    if (memParams.size() > (size_t)stellar::VmInstantiation)
-    {
-        auto const& param = memParams[(size_t)stellar::VmInstantiation];
-        linearTerm = param.linearTerm;
-    }
-    uint64_t limit = 0;
-    (void)linearTerm;
-    (void)scale;
-
+    // Historically this function compared the cache's tracked memory against
+    // a threshold derived from the last rebuild's size so that we could
+    // rebuild fairly often under upload/expiry churn without doing so
+    // spuriously. The tracking was driven by a metric counter that no longer
+    // exists, so the threshold is effectively zero: rebuild whenever any
+    // protocol's cache has consumed memory since the last rebuild.
     for (auto const& v : mModuleCacheProtocols)
     {
-        auto bytesConsumed = mModuleCache->get_mem_bytes_consumed(v);
-        if (bytesConsumed > limit)
+        if (mModuleCache->get_mem_bytes_consumed(v) > 0)
         {
-            CLOG_DEBUG(Ledger,
-                       "Rebuilding module cache: worst-case estimate {} "
-                       "model-bytes consumed of {} limit",
-                       bytesConsumed, limit);
             startCompilingAllContracts(minLedgerVersion);
             break;
         }
@@ -1189,10 +1142,8 @@ LedgerManagerImpl::emitNextMeta()
                                   "took", std::chrono::milliseconds(100));
     if (mMetaStream)
     {
-        size_t written = 0;
-        mMetaStream->writeOne(mNextMetaToEmit->getXDR(), nullptr, &written);
+        mMetaStream->writeOne(mNextMetaToEmit->getXDR());
         mMetaStream->flush();
-        (void)written;
     }
     if (mMetaDebugStream)
     {
@@ -2445,8 +2396,6 @@ LedgerManagerImpl::processResultAndMeta(
     resultPair.transactionHash = tx.getContentsHash();
     resultPair.result = result.getXDR();
 
-    (void)result;
-
     // First gather the TransactionResultPair into the TxResultSet
     // for hashing into the ledger header.
     txResultSet.results.emplace_back(resultPair);
@@ -2550,17 +2499,6 @@ LedgerManagerImpl::applyTransactions(
 
     processPostTxSetApply(phases, applyStages, ltx, ledgerCloseMeta,
                           txResultSet);
-
-    // Update cluster and stage metrics
-    if (!applyStages.empty())
-    {
-        size_t maxClusters = 0;
-        for (auto const& stage : applyStages)
-        {
-            maxClusters = std::max(maxClusters, stage.numClusters());
-        }
-        (void)maxClusters;
-    }
 
     logTxApplyMetrics(ltx, numTxs, numOps);
     return txResultSet;

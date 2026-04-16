@@ -145,7 +145,6 @@ class LiveBucketIndex : public NonMovableOrCopyable
 
     IterT begin() const;
     IterT end() const;
-    void markBloomMiss() const;
 #ifdef BUILD_TESTS
     bool operator==(LiveBucketIndex const& in) const;
     size_t getMaxCacheSize() const;

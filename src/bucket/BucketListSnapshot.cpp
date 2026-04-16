@@ -116,11 +116,10 @@ SearchableBucketListSnapshot<BucketT>::getStream(
     return *it->second;
 }
 
-// Loads an entry from the bucket file at the given offset. Returns a pair of
-// (entry, bloomMiss) where bloomMiss is true if the bloom filter indicated the
-// key might exist but it wasn't actually found (a false positive).
+// Loads an entry from the bucket file at the given offset, or returns nullptr
+// if the bloom filter gave a false positive.
 template <class BucketT>
-std::pair<std::shared_ptr<typename BucketT::EntryT const>, bool>
+std::shared_ptr<typename BucketT::EntryT const>
 SearchableBucketListSnapshot<BucketT>::getEntryAtOffset(
     std::shared_ptr<BucketT const> const& bucket, LedgerKey const& k,
     std::streamoff pos, size_t pageSize) const
@@ -129,7 +128,7 @@ SearchableBucketListSnapshot<BucketT>::getEntryAtOffset(
     releaseAssertOrThrow(pageSize > 0);
     if (bucket->isEmpty())
     {
-        return {nullptr, false};
+        return nullptr;
     }
 
     auto& stream = getStream(bucket);
@@ -140,25 +139,23 @@ SearchableBucketListSnapshot<BucketT>::getEntryAtOffset(
     {
         auto entry = std::make_shared<typename BucketT::EntryT const>(be);
         bucket->getIndex().maybeAddToCache(entry);
-        return {entry, false};
+        return entry;
     }
 
-    bucket->getIndex().markBloomMiss();
-    return {nullptr, true};
+    return nullptr;
 }
 
-// Looks up a single key in a bucket using its index. Returns (entry, bloomMiss)
-// where entry is nullptr if not found, and bloomMiss indicates a bloom filter
-// false positive (key appeared to exist but wasn't actually in the bucket).
+// Looks up a single key in a bucket using its index. Returns nullptr if the
+// key is not in this bucket.
 template <class BucketT>
-std::pair<std::shared_ptr<typename BucketT::EntryT const>, bool>
+std::shared_ptr<typename BucketT::EntryT const>
 SearchableBucketListSnapshot<BucketT>::getBucketEntry(
     std::shared_ptr<BucketT const> const& bucket, LedgerKey const& k) const
 {
     ZoneScoped;
     if (bucket->isEmpty())
     {
-        return {nullptr, false};
+        return nullptr;
     }
 
     auto indexRes = bucket->getIndex().lookup(k);
@@ -168,7 +165,7 @@ SearchableBucketListSnapshot<BucketT>::getBucketEntry(
     case IndexReturnState::CACHE_HIT:
         if constexpr (std::is_same_v<BucketT, LiveBucket>)
         {
-            return {indexRes.cacheHit(), false};
+            return indexRes.cacheHit();
         }
         else
         {
@@ -180,7 +177,7 @@ SearchableBucketListSnapshot<BucketT>::getBucketEntry(
                                 bucket->getIndex().getPageSize());
     // Key not in this bucket
     case IndexReturnState::NOT_FOUND:
-        return {nullptr, false};
+        return nullptr;
     }
 }
 
@@ -228,9 +225,9 @@ SearchableBucketListSnapshot<BucketT>::loadKeysFromBucket(
             break;
         // Index found file offset, load entry from disk
         case IndexReturnState::FILE_OFFSET:
-            std::tie(entryOp, std::ignore) =
-                getEntryAtOffset(bucket, *currKeyIt, indexRes.fileOffset(),
-                                 bucket->getIndex().getPageSize());
+            entryOp = getEntryAtOffset(bucket, *currKeyIt,
+                                       indexRes.fileOffset(),
+                                       bucket->getIndex().getPageSize());
             break;
         // Key not in this bucket, try next key
         case IndexReturnState::NOT_FOUND:
@@ -305,9 +302,7 @@ SearchableBucketListSnapshot<BucketT>::load(LedgerKey const& k) const
 
     // Search function called on each Bucket in BucketList until we find the key
     auto loadKeyBucketLoop = [&](std::shared_ptr<BucketT const> const& bucket) {
-        auto [be, bloomMiss] = getBucketEntry(bucket, k);
-        (void)bloomMiss;
-
+        auto be = getBucketEntry(bucket, k);
         if (be)
         {
             result = BucketT::bucketEntryToLoadResult(be);
@@ -400,9 +395,8 @@ SearchableLiveBucketListSnapshot::SearchableLiveBucketListSnapshot(
 std::vector<LedgerEntry>
 SearchableLiveBucketListSnapshot::loadKeys(
     std::set<LedgerKey, LedgerEntryIdCmp> const& inKeys,
-    std::string const& label) const
+    std::string const&) const
 {
-    (void)label;
     auto op = loadKeysInternal(inKeys, std::nullopt);
     releaseAssertOrThrow(op);
     return std::move(*op);

@@ -68,10 +68,10 @@ LiveBucketIndex::LiveBucketIndex(BucketManager& bm,
 }
 
 template <class Archive>
-LiveBucketIndex::LiveBucketIndex(BucketManager const& bm, Archive& ar,
+LiveBucketIndex::LiveBucketIndex(BucketManager const&, Archive& ar,
                                  std::streamoff pageSize)
 
-    : mDiskIndex(std::make_unique<DiskIndex<LiveBucket>>(ar, bm, pageSize))
+    : mDiskIndex(std::make_unique<DiskIndex<LiveBucket>>(ar, pageSize))
 {
     // Only disk indexes are serialized
     releaseAssertOrThrow(pageSize != 0);
@@ -184,12 +184,6 @@ LiveBucketIndex::end() const
     }
 }
 
-void
-LiveBucketIndex::markBloomMiss() const
-{
-    releaseAssertOrThrow(mDiskIndex);
-    mDiskIndex->markBloomMiss();
-}
 
 std::shared_ptr<BucketEntry const>
 LiveBucketIndex::getCachedEntry(LedgerKey const& k) const
