@@ -191,32 +191,6 @@ LedgerManager::ledgerAbbrev(LedgerHeaderHistoryEntry const& he)
 LedgerManagerImpl::LedgerApplyMetrics::LedgerApplyMetrics(
     MetricsRegistry& registry)
     : mSorobanMetrics(registry)
-    , mTransactionApply(registry.NewTimer({"ledger", "transaction", "apply"}))
-    , mTotalTxApply(registry.NewTimer({"ledger", "transaction", "total-apply"}))
-    , mTransactionCount(
-          registry.NewHistogram({"ledger", "transaction", "count"}))
-    , mOperationCount(registry.NewHistogram({"ledger", "operation", "count"}))
-    , mPrefetchHitRate(
-          registry.NewHistogram({"ledger", "prefetch", "hit-rate"}))
-    , mLedgerClose(registry.NewTimer({"ledger", "ledger", "close"}))
-    , mLedgerAgeClosed(registry.NewBuckets({"ledger", "age", "closed"},
-                                           {5000.0, 7000.0, 10000.0, 20000.0}))
-    , mLedgerAge(registry.NewCounter({"ledger", "age", "current-seconds"}))
-    , mTransactionApplySucceeded(
-          registry.NewCounter({"ledger", "apply", "success"}))
-    , mTransactionApplyFailed(
-          registry.NewCounter({"ledger", "apply", "failure"}))
-    , mSorobanTransactionApplySucceeded(
-          registry.NewCounter({"ledger", "apply-soroban", "success"}))
-    , mSorobanTransactionApplyFailed(
-          registry.NewCounter({"ledger", "apply-soroban", "failure"}))
-    , mMaxClustersPerLedger(
-          registry.NewCounter({"ledger", "apply-soroban", "max-clusters"}))
-    , mStagesPerLedger(
-          registry.NewCounter({"ledger", "apply-soroban", "stages"}))
-    , mMetaStreamBytes(
-          registry.NewMeter({"ledger", "metastream", "bytes"}, "byte"))
-    , mMetaStreamWriteTime(registry.NewTimer({"ledger", "metastream", "write"}))
 {
 }
 
@@ -431,7 +405,6 @@ void
 LedgerManagerImpl::startNewLedger(LedgerHeader const& genesisLedger)
 {
     mApplyState.assertSetupPhase();
-    auto ledgerTime = mApplyState.getMetrics().mLedgerClose.TimeScope();
     SecretKey skey = SecretKey::fromSeed(mApp.getNetworkID());
 
     LedgerTxn ltx(mApp.getLedgerTxnRoot(), false);
@@ -1271,8 +1244,6 @@ LedgerManagerImpl::secondsSinceLastLedgerClose() const
 void
 LedgerManagerImpl::syncMetrics()
 {
-    mApplyState.getMetrics().mLedgerAge.set_count(
-        secondsSinceLastLedgerClose());
     mApp.syncOwnMetrics();
 }
 
@@ -1286,14 +1257,12 @@ LedgerManagerImpl::emitNextMeta()
     auto timer = LogSlowExecution("MetaStream write",
                                   LogSlowExecution::Mode::AUTOMATIC_RAII,
                                   "took", std::chrono::milliseconds(100));
-    auto streamWrite =
-        mApplyState.getMetrics().mMetaStreamWriteTime.TimeScope();
     if (mMetaStream)
     {
         size_t written = 0;
         mMetaStream->writeOne(mNextMetaToEmit->getXDR(), nullptr, &written);
         mMetaStream->flush();
-        mApplyState.getMetrics().mMetaStreamBytes.Mark(written);
+        (void)written;
     }
     if (mMetaDebugStream)
     {
@@ -1470,7 +1439,6 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
     mApplyState.markStartOfApplying();
     JITTER_INJECT_DELAY();
 
-    auto ledgerTime = mApplyState.getMetrics().mLedgerClose.TimeScope();
     LogSlowExecution applyLedgerTime{"applyLedger",
                                      LogSlowExecution::Mode::MANUAL, "",
                                      std::chrono::milliseconds::max()};
@@ -1499,11 +1467,9 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
     ZoneValue(static_cast<int64_t>(header.current().ledgerSeq));
 
     auto now = mApp.getClock().now();
-    mApplyState.getMetrics().mLedgerAgeClosed.Update(now - mLastClose);
     // mLastClose is only accessed by a single thread, so no synchronization
     // needed
     mLastClose = now;
-    mApplyState.getMetrics().mLedgerAge.set_count(0);
 
     TxSetXDRFrameConstPtr txSet = ledgerData.getTxSet();
 
@@ -1616,12 +1582,7 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
         // Force-deactivate header in overlay only mode; in normal mode, this is
         // done by `processFeesSeqNums`
         ltx.deactivateHeaderTestOnly();
-        mApplyState.getMetrics().mTransactionCount.Update(
-            static_cast<int64_t>(numTxs));
         TracyPlot("ledger.transaction.count", static_cast<int64_t>(numTxs));
-
-        mApplyState.getMetrics().mOperationCount.Update(
-            static_cast<int64_t>(numOps));
         TracyPlot("ledger.operation.count", static_cast<int64_t>(numOps));
     }
     else
@@ -1631,13 +1592,6 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
         prefetchTxSourceIds(mApp.getLedgerTxnRoot(), *applicableTxSet,
                             mApp.getConfig());
 
-        // Time the entire transaction processing phase from fee processing
-        // through transaction application
-        auto totalTxApplyTime =
-            mApplyState.getMetrics().mTotalTxApply.TimeScope();
-
-        // Subtle: after this call, `header` is invalidated, and is not safe
-        // to use
         auto const mutableTxResults = processFeesSeqNums(
             *applicableTxSet, ltx, ledgerCloseMeta, ledgerData);
         txResultSet = applyTransactions(*applicableTxSet, mutableTxResults, ltx,
@@ -1883,9 +1837,7 @@ LedgerManagerImpl::applyLedger(LedgerCloseData const& ledgerData,
 
     maybeSimulateSleep(mApp.getConfig(), txSet->sizeOpTotalForLogging(),
                        applyLedgerTime);
-    std::chrono::duration<double> ledgerTimeSeconds = ledgerTime.Stop();
-    CLOG_DEBUG(Perf, "Applied ledger {} in {} seconds", ledgerSeq,
-               ledgerTimeSeconds.count());
+    CLOG_DEBUG(Perf, "Applied ledger {}", ledgerSeq);
     FrameMark;
 }
 
@@ -2395,14 +2347,6 @@ LedgerManagerImpl::applyThread(
 {
     for (auto const& txBundle : cluster)
     {
-        // Apply timer
-        std::optional<medida::TimerContext> txTime;
-        if (!mApp.getConfig().DISABLE_SOROBAN_METRICS_FOR_TESTING)
-        {
-            txTime.emplace(
-                mApplyState.getMetrics().mTransactionApply.TimeScope());
-        }
-
         Hash txSubSeed = subSha256(sorobanBasePrngSeed, txBundle.getTxNum());
 
         threadState->flushRoTTLBumpsInTxWriteFootprint(txBundle);
@@ -2574,22 +2518,7 @@ LedgerManagerImpl::processResultAndMeta(
     resultPair.transactionHash = tx.getContentsHash();
     resultPair.result = result.getXDR();
 
-    if (result.isSuccess())
-    {
-        if (tx.isSoroban())
-        {
-            mApplyState.getMetrics().mSorobanTransactionApplySucceeded.inc();
-        }
-        mApplyState.getMetrics().mTransactionApplySucceeded.inc();
-    }
-    else
-    {
-        if (tx.isSoroban())
-        {
-            mApplyState.getMetrics().mSorobanTransactionApplyFailed.inc();
-        }
-        mApplyState.getMetrics().mTransactionApplyFailed.inc();
-    }
+    (void)result;
 
     // First gather the TransactionResultPair into the TxResultSet
     // for hashing into the ledger header.
@@ -2630,12 +2559,7 @@ LedgerManagerImpl::applyTransactions(
     // Record counts
     if (numTxs > 0)
     {
-        mApplyState.getMetrics().mTransactionCount.Update(
-            static_cast<int64_t>(numTxs));
         TracyPlot("ledger.transaction.count", static_cast<int64_t>(numTxs));
-
-        mApplyState.getMetrics().mOperationCount.Update(
-            static_cast<int64_t>(numOps));
         TracyPlot("ledger.operation.count", static_cast<int64_t>(numOps));
         CLOG_INFO(Tx, "applying ledger {} ({})",
                   ltx.loadHeader().current().ledgerSeq, txSet.summary());
@@ -2708,8 +2632,7 @@ LedgerManagerImpl::applyTransactions(
         {
             maxClusters = std::max(maxClusters, stage.numClusters());
         }
-        mApplyState.getMetrics().mMaxClustersPerLedger.set_count(maxClusters);
-        mApplyState.getMetrics().mStagesPerLedger.set_count(applyStages.size());
+        (void)maxClusters;
     }
 
     logTxApplyMetrics(ltx, numTxs, numOps);
@@ -2790,7 +2713,6 @@ LedgerManagerImpl::applySequentialPhase(
         ZoneNamedN(txZone, "applyTransaction", true);
         auto& mutableTxResult = *mutableTxResults.at(index);
 
-        auto txTime = mApplyState.getMetrics().mTransactionApply.TimeScope();
         TransactionMetaBuilder tm(enableTxMeta, *tx,
                                   ltx.loadHeader().current().ledgerVersion,
                                   mApp.getAppConnector());
@@ -2892,8 +2814,6 @@ LedgerManagerImpl::logTxApplyMetrics(AbstractLedgerTxn& ltx, size_t numTxs,
     CLOG_DEBUG(Ledger, "Ledger: {} txs: {}, ops: {}, prefetch hit rate (%): {}",
                ledgerSeq, numTxs, numOps, hitRate);
 
-    // We lose a bit of precision here, as medida only accepts int64_t
-    mApplyState.getMetrics().mPrefetchHitRate.Update(std::llround(hitRate));
     TracyPlot("ledger.prefetch.hit-rate", hitRate);
 }
 

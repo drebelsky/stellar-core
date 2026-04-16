@@ -124,10 +124,8 @@ SurveyManager::SurveyManager(Application& app)
     , mMessageLimiter(app, NUM_LEDGERS_BEFORE_IGNORE,
                       MAX_REQUEST_LIMIT_PER_LEDGER)
     , SURVEY_THROTTLE_TIMEOUT_MS(getSurveyThrottleTimeoutMs(app))
-    , mSurveyDataManager(
-          [this]() { return mApp.getClock().now(); },
-          mApp.getMetrics().NewMeter({"scp", "sync", "lost"}, "sync"),
-          mApp.getConfig())
+    , mSurveyDataManager([this]() { return mApp.getClock().now(); },
+                         mApp.getConfig())
 {
 }
 

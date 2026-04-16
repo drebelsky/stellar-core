@@ -5,7 +5,6 @@
 #pragma once
 
 #include "work/Work.h"
-#include <medida/meter.h>
 
 namespace stellar
 {
@@ -37,7 +36,5 @@ class CheckSingleLedgerHeaderWork : public Work
     std::unique_ptr<TmpDir> mDownloadDir;
     std::unique_ptr<FileTransferInfo> mFt;
     std::shared_ptr<GetAndUnzipRemoteFileWork> mGetLedgerFileWork;
-    medida::Meter& mCheckSuccess;
-    medida::Meter& mCheckFailed;
 };
 }

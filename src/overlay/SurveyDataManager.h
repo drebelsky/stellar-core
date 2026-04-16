@@ -86,7 +86,7 @@ class SurveyDataManager : public NonMovableOrCopyable
     // Create a survey manager. `clock` must be the Application's clock.
     // `lostSyncMeter` is a meter to track how many times the node lost sync.
     SurveyDataManager(std::function<VirtualClock::time_point()> const& getNow,
-                      medida::Meter const& lostSyncMeter, Config const& cfg);
+                      Config const& cfg);
 
     // Start the collecting phase of a survey. Ignores requests if a survey is
     // already active. `inboundPeers` and `outboundPeers` should collectively
@@ -159,9 +159,6 @@ class SurveyDataManager : public NonMovableOrCopyable
   private:
     // Get the current time
     std::function<VirtualClock::time_point()> const mGetNow;
-
-    // Metric tracking sync status
-    medida::Meter const& mLostSyncMeter;
 
     // Start and stop times for the collecting phase
     std::optional<VirtualClock::time_point> mCollectStartTime = std::nullopt;

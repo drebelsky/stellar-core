@@ -96,9 +96,8 @@ CollectingPeerData::CollectingPeerData(Peer::PeerMetrics const& peerMetrics)
 }
 
 SurveyDataManager::SurveyDataManager(
-    std::function<VirtualClock::time_point()> const& getNow,
-    medida::Meter const& lostSyncMeter, Config const& cfg)
-    : mGetNow(getNow), mLostSyncMeter(lostSyncMeter)
+    std::function<VirtualClock::time_point()> const& getNow, Config const& cfg)
+    : mGetNow(getNow)
 {
 #ifdef BUILD_TESTS
     // Override phase durations if set in the config and this build has tests
@@ -129,7 +128,7 @@ SurveyDataManager::startSurveyCollecting(
         mCollectStartTime = mGetNow();
         mNonce = msg.nonce;
         mSurveyor = msg.surveyorID;
-        mCollectingNodeData.emplace(mLostSyncMeter.count(), initialState);
+        mCollectingNodeData.emplace(0, initialState);
         if (mCollectingInboundPeerData.empty() &&
             mCollectingOutboundPeerData.empty())
         {
@@ -450,8 +449,7 @@ SurveyDataManager::finalizeNodeData(Config const& config)
     mFinalNodeData->p75SCPSelfToOtherLatencyMs = doubleToClampedUint32(
         mCollectingNodeData->mSCPSelfToOtherLatencyMsHistogram.GetSnapshot()
             .get75thPercentile());
-    mFinalNodeData->lostSyncCount = static_cast<uint32_t>(
-        mLostSyncMeter.count() - mCollectingNodeData->mInitialLostSyncCount);
+    mFinalNodeData->lostSyncCount = 0;
     switch (mCollectingNodeData->mInitialState)
     {
     case Application::APP_ACQUIRING_CONSENSUS_STATE:

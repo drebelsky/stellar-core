@@ -206,16 +206,7 @@ class LoadGenerator
   private:
     struct TxMetrics
     {
-        medida::Meter& mNativePayment;
-        medida::Meter& mSorobanUploadTxs;
-        medida::Meter& mSorobanSetupInvokeTxs;
-        medida::Meter& mSorobanSetupUpgradeTxs;
-        medida::Meter& mSorobanInvokeTxs;
-        medida::Meter& mSorobanCreateUpgradeTxs;
         medida::Meter& mTxnAttempted;
-        medida::Meter& mTxnRejected;
-        medida::Meter& mTxnBytes;
-        medida::Meter& mNativePaymentBytes;
 
         TxMetrics(MetricsRegistry& m);
         void report();
@@ -266,11 +257,7 @@ class LoadGenerator
     // ensure unique preimages for all `SOROBAN_UPGRADE_SETUP` runs.
     uint32_t mNumCreateContractTransactionCalls = 0;
 
-    medida::Timer& mStepTimer;
-    medida::Meter& mStepMeter;
     mutable TxMetrics mTxMetrics;
-    medida::Timer& mApplyTxTimer;
-    medida::Timer& mApplyOpTimer;
 
     // Internal loadgen state gets reset after each run, but it is impossible to
     // regenerate contract instance keys for DB lookup. Due to this we maintain

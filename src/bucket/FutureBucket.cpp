@@ -366,8 +366,6 @@ FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
                hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()));
 
     BucketManager& bm = app.getBucketManager();
-    auto& timer = app.getMetrics().NewTimer(
-        {"bucket", "merge-time", "level-" + std::to_string(level)});
 
     std::vector<Hash> shadowHashes;
     std::vector<std::shared_ptr<BucketT>> shadows;
@@ -411,8 +409,7 @@ FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
     using task_t = std::packaged_task<std::shared_ptr<BucketT>()>;
     std::shared_ptr<task_t> task = std::make_shared<task_t>(
         [curr, snap, &bm, shadows, maxProtocolVersion, countMergeEvents, level,
-         &timer, &ctx, doFsync, availableTime]() mutable {
-            auto timeScope = timer.TimeScope();
+         &ctx, doFsync, availableTime]() mutable {
             CLOG_TRACE(Bucket, "Worker merging curr={} with snap={}",
                        hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()));
 
@@ -431,14 +428,7 @@ FutureBucket<BucketT>::startMerge(Application& app, uint32_t maxProtocolVersion,
                     CLOG_TRACE(
                         Bucket, "Worker finished merging curr={} with snap={}",
                         hexAbbrev(curr->getHash()), hexAbbrev(snap->getHash()));
-
-                    std::chrono::duration<double> time(timeScope.Stop());
-                    double timePct = time.count() / availableTime.count() * 100;
-                    CLOG_DEBUG(
-                        Perf,
-                        "Bucket merge on level {} finished in {} seconds "
-                        "({}% of available time)",
-                        level, time.count(), timePct);
+                    (void)availableTime;
                 }
 
                 return res;

@@ -90,8 +90,6 @@ LedgerApplyManager::create(Application& app)
 LedgerApplyManagerImpl::LedgerApplyManagerImpl(Application& app)
     : mApp(app)
     , mCatchupWork(nullptr)
-    , mSyncingLedgersSize(
-          app.getMetrics().NewCounter({"ledger", "memory", "queued-ledgers"}))
     , mLargestLedgerSeqHeard(0)
 {
     releaseAssert(threadIsMain());
@@ -412,7 +410,6 @@ void
 LedgerApplyManagerImpl::syncMetrics()
 {
     releaseAssert(threadIsMain());
-    mSyncingLedgersSize.set_count(mSyncingLedgers.size());
 }
 
 void

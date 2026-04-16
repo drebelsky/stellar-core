@@ -103,14 +103,7 @@ LoadGenerator::LoadGenerator(Application& app)
     , mApp(app)
     , mLastSecond(0)
     , mTotalSubmitted(0)
-    , mStepTimer(mApp.getMetrics().NewTimer({"loadgen", "step", "submit"}))
-    , mStepMeter(
-          mApp.getMetrics().NewMeter({"loadgen", "step", "count"}, "step"))
     , mTxMetrics(app.getMetrics())
-    , mApplyTxTimer(
-          mApp.getMetrics().NewTimer({"ledger", "transaction", "apply"}))
-    , mApplyOpTimer(
-          mApp.getMetrics().NewTimer({"ledger", "operation", "apply"}))
     , mRoot(app.getRoot())
     , mLoadgenComplete(
           mApp.getMetrics().NewMeter({"loadgen", "run", "complete"}, "run"))
@@ -184,8 +177,6 @@ LoadGenerator::getTxPerStep(uint32_t txRate, std::chrono::seconds spikeInterval,
     {
         throw std::runtime_error("Load generation start time must be set");
     }
-
-    mStepMeter.Mark();
 
     auto now = mApp.getClock().now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -673,7 +664,6 @@ LoadGenerator::generateLoad(GeneratedLoadConfig cfg)
     }
 
     auto txPerStep = getTxPerStep(cfg.txRate, cfg.spikeInterval, cfg.spikeSize);
-    auto submitScope = mStepTimer.TimeScope();
 
     uint64_t now = mApp.timeNow();
     // Cleaning up accounts every second, so we don't call potentially expensive
@@ -826,14 +816,11 @@ LoadGenerator::generateLoad(GeneratedLoadConfig cfg)
         }
     }
 
-    auto submit = submitScope.Stop();
-
     now = mApp.timeNow();
 
-    // Emit a log message once per second.
     if (now != mLastSecond)
     {
-        logProgress(submit, cfg);
+        logProgress(std::chrono::nanoseconds::zero(), cfg);
     }
 
     mLastSecond = now;
@@ -938,52 +925,16 @@ LoadGenerator::getNextAvailableAccount(uint32_t ledgerNum)
 }
 
 void
-LoadGenerator::logProgress(std::chrono::nanoseconds submitTimer,
+LoadGenerator::logProgress(std::chrono::nanoseconds,
                            GeneratedLoadConfig const& cfg) const
 {
-    using namespace std::chrono;
+    auto remainingTxCount = cfg.isSorobanSetup()
+                                ? (cfg.getSorobanConfig().nWasms +
+                                   cfg.getSorobanConfig().nInstances)
+                                : cfg.nTxs;
 
-    auto& applyTx = mApplyTxTimer;
-    auto& applyOp = mApplyOpTimer;
-
-    auto submitSteps = duration_cast<milliseconds>(submitTimer).count();
-
-    auto remainingTxCount = 0;
-    if (cfg.isSorobanSetup())
-    {
-        remainingTxCount =
-            cfg.getSorobanConfig().nWasms + cfg.getSorobanConfig().nInstances;
-    }
-    else
-    {
-        remainingTxCount = cfg.nTxs;
-    }
-
-    auto etaSecs = (uint32_t)(((double)remainingTxCount) /
-                              max<double>(1, applyTx.one_minute_rate()));
-
-    auto etaHours = etaSecs / 3600;
-    auto etaMins = etaSecs % 3600 / 60;
-
-    if (cfg.isSoroban())
-    {
-        CLOG_INFO(LoadGen,
-                  "Tx/s: {} target, {} tx actual (1m EWMA). Pending: {} txs. "
-                  "ETA: {}h{}m",
-                  cfg.txRate, applyTx.one_minute_rate(), remainingTxCount,
-                  etaHours, etaMins);
-    }
-    else
-    {
-        CLOG_INFO(LoadGen,
-                  "Tx/s: {} target, {}tx/{}op actual (1m EWMA). Pending: {} "
-                  "txs. ETA: {}h{}m",
-                  cfg.txRate, applyTx.one_minute_rate(),
-                  applyOp.one_minute_rate(), remainingTxCount, etaHours,
-                  etaMins);
-    }
-
-    CLOG_DEBUG(LoadGen, "Step timing: {}ms submit.", submitSteps);
+    CLOG_INFO(LoadGen, "Tx/s: {} target. Pending: {} txs.", cfg.txRate,
+              remainingTxCount);
 
     mTxMetrics.report();
 }
@@ -1316,45 +1267,14 @@ LoadGenerator::waitTillCompleteWithoutChecks()
 }
 
 LoadGenerator::TxMetrics::TxMetrics(MetricsRegistry& m)
-    : mNativePayment(m.NewMeter({"loadgen", "payment", "submitted"}, "op"))
-    , mSorobanUploadTxs(m.NewMeter({"loadgen", "soroban", "upload"}, "txn"))
-    , mSorobanSetupInvokeTxs(
-          m.NewMeter({"loadgen", "soroban", "setup_invoke"}, "txn"))
-    , mSorobanSetupUpgradeTxs(
-          m.NewMeter({"loadgen", "soroban", "setup_upgrade"}, "txn"))
-    , mSorobanInvokeTxs(m.NewMeter({"loadgen", "soroban", "invoke"}, "txn"))
-    , mSorobanCreateUpgradeTxs(
-          m.NewMeter({"loadgen", "soroban", "create_upgrade"}, "txn"))
-    , mTxnAttempted(m.NewMeter({"loadgen", "txn", "attempted"}, "txn"))
-    , mTxnRejected(m.NewMeter({"loadgen", "txn", "rejected"}, "txn"))
-    , mTxnBytes(m.NewMeter({"loadgen", "txn", "bytes"}, "txn"))
-    , mNativePaymentBytes(m.NewMeter({"loadgen", "payment", "bytes"}, "txn"))
+    : mTxnAttempted(m.NewMeter({"loadgen", "txn", "attempted"}, "txn"))
 {
 }
 
 void
 LoadGenerator::TxMetrics::report()
 {
-    CLOG_DEBUG(LoadGen,
-               "Counts: {} tx, {} rj, {} by, {} na, {} "
-               "su, {} ssi, {} ssu, {} si, {}, scu, {} nab",
-               mTxnAttempted.count(), mTxnRejected.count(), mTxnBytes.count(),
-               mNativePayment.count(), mSorobanUploadTxs.count(),
-               mSorobanSetupInvokeTxs.count(), mSorobanSetupUpgradeTxs.count(),
-               mSorobanInvokeTxs.count(), mSorobanCreateUpgradeTxs.count(),
-               mNativePaymentBytes.count());
-
-    CLOG_DEBUG(LoadGen,
-               "Rates/sec (1m EWMA): {} tx, {} rj, {} by, {} na, "
-               "{} su, {} ssi, {} ssu, {} si, {} scu, {} nab",
-               mTxnAttempted.one_minute_rate(), mTxnRejected.one_minute_rate(),
-               mTxnBytes.one_minute_rate(), mNativePayment.one_minute_rate(),
-               mSorobanUploadTxs.one_minute_rate(),
-               mSorobanSetupInvokeTxs.one_minute_rate(),
-               mSorobanSetupUpgradeTxs.one_minute_rate(),
-               mSorobanInvokeTxs.one_minute_rate(),
-               mSorobanCreateUpgradeTxs.one_minute_rate(),
-               mNativePaymentBytes.one_minute_rate());
+    CLOG_DEBUG(LoadGen, "Counts: {} tx", mTxnAttempted.count());
 }
 
 TransactionQueue::AddResultCode
@@ -1362,60 +1282,11 @@ LoadGenerator::execute(TransactionFrameBasePtr txf, LoadGenMode mode,
                        TransactionResultCode& code)
 {
     TxMetrics txm(mApp.getMetrics());
-
-    // Record tx metrics.
-    switch (mode)
-    {
-    case LoadGenMode::PAY:
-    case LoadGenMode::PAY_PREGENERATED:
-        txm.mNativePayment.Mark(txf->getNumOperations());
-        txm.mNativePaymentBytes.Mark(
-            xdr::xdr_argpack_size(*txf->toStellarMessage()));
-        break;
-    case LoadGenMode::SOROBAN_UPLOAD:
-        txm.mSorobanUploadTxs.Mark();
-        break;
-    case LoadGenMode::SOROBAN_INVOKE_SETUP:
-        txm.mSorobanSetupInvokeTxs.Mark();
-        break;
-    case LoadGenMode::SOROBAN_UPGRADE_SETUP:
-        txm.mSorobanSetupUpgradeTxs.Mark();
-        break;
-    case LoadGenMode::SOROBAN_INVOKE:
-        txm.mSorobanInvokeTxs.Mark();
-        break;
-    case LoadGenMode::SOROBAN_CREATE_UPGRADE:
-        txm.mSorobanCreateUpgradeTxs.Mark();
-        break;
-    case LoadGenMode::MIXED_CLASSIC_SOROBAN:
-        switch (mLastMixedMode)
-        {
-        case LoadGenMode::PAY:
-            txm.mNativePayment.Mark(txf->getNumOperations());
-            txm.mNativePaymentBytes.Mark(
-                xdr::xdr_argpack_size(*txf->toStellarMessage()));
-            break;
-        case LoadGenMode::SOROBAN_UPLOAD:
-            txm.mSorobanUploadTxs.Mark();
-            break;
-        case LoadGenMode::SOROBAN_INVOKE:
-            txm.mSorobanInvokeTxs.Mark();
-            break;
-        default:
-            releaseAssert(false);
-        }
-        break;
-    case LoadGenMode::SOROBAN_INVOKE_APPLY_LOAD:
-        txm.mSorobanInvokeTxs.Mark();
-        break;
-    }
-
+    (void)mode;
     txm.mTxnAttempted.Mark();
 
     auto msg = txf->toStellarMessage();
-    txm.mTxnBytes.Mark(xdr::xdr_argpack_size(*msg));
 
-    // Skip certain checks for pregenerated transactions
     bool isPregeneratedTx = (mode == LoadGenMode::PAY_PREGENERATED);
     auto addResult = mApp.getHerder().recvTransaction(
         txf, true, /*force=*/false, /*isLoadgenTx=*/isPregeneratedTx);
@@ -1437,7 +1308,6 @@ LoadGenerator::execute(TransactionFrameBasePtr txf, LoadGenMode mode,
             releaseAssert(addResult.txResult);
             code = addResult.txResult->getResultCode();
         }
-        txm.mTxnRejected.Mark();
     }
     else
     {

@@ -8,7 +8,7 @@
 #include "bucket/HotArchiveBucket.h"
 #include "bucket/LedgerCmp.h"
 #include "bucket/LiveBucket.h"
-#include "util/SimpleTimer.h"
+#include "util/MetricsRegistry.h"
 #include "util/UnorderedMap.h"
 #include "util/UnorderedSet.h"
 #include "util/XDRStream.h"
@@ -33,6 +33,7 @@ class Timer;
 namespace stellar
 {
 
+class MetricsRegistry;
 struct EvictionMetrics;
 struct EvictionResultCandidates;
 struct EvictionResultEntry;
@@ -94,11 +95,6 @@ template <class BucketT> class SearchableBucketListSnapshot
         mStreams;
 
     std::reference_wrapper<MetricsRegistry> mMetrics;
-
-    // Tracks load times for each LedgerEntryType. We use
-    // SimpleTimer since medida Timer overhead is too expensive for point loads.
-    UnorderedMap<LedgerEntryType, std::reference_wrapper<SimpleTimer>>
-        mPointTimers;
 
     // Bulk load timers take significantly longer, so the timer overhead is
     // comparatively negligible.

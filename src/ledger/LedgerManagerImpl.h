@@ -67,22 +67,6 @@ class LedgerManagerImpl : public LedgerManager
     struct LedgerApplyMetrics
     {
         SorobanMetrics mSorobanMetrics;
-        medida::Timer& mTransactionApply;
-        medida::Timer& mTotalTxApply;
-        medida::Histogram& mTransactionCount;
-        medida::Histogram& mOperationCount;
-        medida::Histogram& mPrefetchHitRate;
-        medida::Timer& mLedgerClose;
-        medida::Buckets& mLedgerAgeClosed;
-        medida::Counter& mLedgerAge;
-        medida::Counter& mTransactionApplySucceeded;
-        medida::Counter& mTransactionApplyFailed;
-        medida::Counter& mSorobanTransactionApplySucceeded;
-        medida::Counter& mSorobanTransactionApplyFailed;
-        medida::Counter& mMaxClustersPerLedger;
-        medida::Counter& mStagesPerLedger;
-        medida::Meter& mMetaStreamBytes;
-        medida::Timer& mMetaStreamWriteTime;
         LedgerApplyMetrics(MetricsRegistry& registry);
     };
 

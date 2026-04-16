@@ -329,18 +329,8 @@ QuorumCheckerMetrics::toJson()
 }
 
 void
-QuorumCheckerMetrics::flush(MetricsRegistry& metrics)
+QuorumCheckerMetrics::flush(MetricsRegistry&)
 {
-    metrics.NewCounter({"scp", "qic", "successful-run"}).inc(mSuccessfulRun);
-    metrics.NewCounter({"scp", "qic", "failed-run"}).inc(mFailedRun);
-    metrics.NewCounter({"scp", "qic", "aborted-run"}).inc(mAbortedRun);
-    metrics.NewCounter({"scp", "qic", "result-potential-split"})
-        .inc(mResultPotentialSplit);
-    metrics.NewCounter({"scp", "qic", "result-unknown"}).inc(mResultUnknown);
-    metrics.NewMeter({"scp", "qic", "cumulative-time-ms"}, "milli-second")
-        .Mark(mCumulativeTimeMs);
-    metrics.NewMeter({"scp", "qic", "cumulative-mem-byte"}, "byte")
-        .Mark(mCumulativeMemByte);
     mSuccessfulRun = 0;
     mFailedRun = 0;
     mAbortedRun = 0;
@@ -613,7 +603,6 @@ runQuorumIntersectionCheckAsync(
         }
         else
         {
-            hStateSP->mMetrics.NewCounter({"scp", "qic", "aborted-run"}).inc();
             CLOG_ERROR(SCP, "quorum intersection command failed, rc = {}",
                        ecode);
         }

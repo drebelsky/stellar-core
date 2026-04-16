@@ -71,14 +71,6 @@ SearchableBucketListSnapshot<BucketT>::SearchableBucketListSnapshot(
     , mBulkLoadMeter(
           metrics.NewMeter({BucketT::METRIC_STRING, "query", "loads"}, "query"))
 {
-    for (auto t : xdr::xdr_traits<LedgerEntryType>::enum_values())
-    {
-        auto const& label = xdr::xdr_traits<LedgerEntryType>::enum_name(
-            static_cast<LedgerEntryType>(t));
-        auto& metric = metrics.NewSimpleTimer({BucketT::METRIC_STRING, label},
-                                              std::chrono::microseconds{1});
-        mPointTimers.emplace(static_cast<LedgerEntryType>(t), metric);
-    }
 }
 
 template <class BucketT>
@@ -89,7 +81,6 @@ SearchableBucketListSnapshot<BucketT>::SearchableBucketListSnapshot(
     , mLedgerSeq(other.mLedgerSeq)
     // mStreams intentionally left empty — each copy gets its own stream cache
     , mMetrics(other.mMetrics)
-    , mPointTimers(other.mPointTimers)
     , mBulkTimers(other.mBulkTimers)
     , mBulkLoadMeter(other.mBulkLoadMeter)
 {
@@ -107,7 +98,6 @@ SearchableBucketListSnapshot<BucketT>::operator=(
         mLedgerSeq = other.mLedgerSeq;
         mStreams.clear();
         mMetrics = other.mMetrics;
-        mPointTimers = other.mPointTimers;
         mBulkTimers = other.mBulkTimers;
         mBulkLoadMeter = other.mBulkLoadMeter;
     }
@@ -317,21 +307,12 @@ SearchableBucketListSnapshot<BucketT>::load(LedgerKey const& k) const
     ZoneScoped;
     releaseAssert(mData);
 
-    auto timerIter = mPointTimers.find(k.type());
-    releaseAssert(timerIter != mPointTimers.end());
-    auto timer = timerIter->second.get().TimeScope();
-
     std::shared_ptr<typename BucketT::LoadT const> result{};
 
     // Search function called on each Bucket in BucketList until we find the key
     auto loadKeyBucketLoop = [&](std::shared_ptr<BucketT const> const& bucket) {
         auto [be, bloomMiss] = getBucketEntry(bucket, k);
-        if (bloomMiss)
-        {
-            // Reset timer on bloom miss to avoid outlier metrics, since we
-            // really only want to measure disk performance
-            timer.Reset();
-        }
+        (void)bloomMiss;
 
         if (be)
         {

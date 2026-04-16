@@ -1902,31 +1902,6 @@ runApplyLoad(CommandLineArgs const& args)
                               app.getLedgerManager().getLastClosedLedgerNum()));
             }
 
-            auto& ledgerClose =
-                app.getMetrics().NewTimer({"ledger", "ledger", "close"});
-            ledgerClose.Clear();
-
-            auto& cpuInsRatio = app.getMetrics().NewHistogram(
-                {"soroban", "host-fn-op", "invoke-time-fsecs-cpu-insn-ratio"});
-            cpuInsRatio.Clear();
-
-            auto& cpuInsRatioExclVm = app.getMetrics().NewHistogram(
-                {"soroban", "host-fn-op",
-                 "invoke-time-fsecs-cpu-insn-ratio-excl-vm"});
-            cpuInsRatioExclVm.Clear();
-
-            auto& ledgerCpuInsRatio = app.getMetrics().NewHistogram(
-                {"soroban", "host-fn-op", "ledger-cpu-insns-ratio"});
-            ledgerCpuInsRatio.Clear();
-
-            auto& ledgerCpuInsRatioExclVm = app.getMetrics().NewHistogram(
-                {"soroban", "host-fn-op", "ledger-cpu-insns-ratio-excl-vm"});
-            ledgerCpuInsRatioExclVm.Clear();
-
-            auto& totalTxApplyTime = app.getMetrics().NewTimer(
-                {"ledger", "transaction", "total-apply"});
-            totalTxApplyTime.Clear();
-
             al.execute();
         }
 

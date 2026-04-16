@@ -2229,14 +2229,6 @@ TransactionFrame::parallelApply(
             ledgerInfo.getLedgerVersion() >=
             config.LEDGER_PROTOCOL_MIN_VERSION_INTERNAL_ERROR_REPORT;
 
-        std::optional<medida::TimerContext> opTimer;
-        if (!config.DISABLE_SOROBAN_METRICS_FOR_TESTING)
-        {
-            opTimer.emplace(app.getMetrics()
-                                .NewTimer({"ledger", "operation", "apply"})
-                                .TimeScope());
-        }
-
         releaseAssertOrThrow(mOperations.size() == 1);
 
         auto op = mOperations.front();
@@ -2297,14 +2289,6 @@ TransactionFrame::parallelApply(
     // This is only reachable if an exception is thrown
     txResult.setInnermostError(txINTERNAL_ERROR);
 
-    // We only increase the internal-error metric count if the
-    // ledger is a newer version.
-    if (reportInternalErrOnException)
-    {
-        auto& internalErrorCounter = app.getMetrics().NewCounter(
-            {"ledger", "transaction", "internal-error"});
-        internalErrorCounter.inc();
-    }
     return std::nullopt;
 }
 
@@ -2322,8 +2306,6 @@ TransactionFrame::applyOperations(
         return false;
     }
 
-    auto& internalErrorCounter = app.getMetrics().NewCounter(
-        {"ledger", "transaction", "internal-error"});
     bool reportInternalErrOnException = true;
     try
     {
@@ -2331,28 +2313,13 @@ TransactionFrame::applyOperations(
         // shield outer scope of any side effects with LedgerTxn
         LedgerTxn ltxTx(ltx);
         uint32_t ledgerVersion = ltxTx.loadHeader().current().ledgerVersion;
-        // We do not want to increase the internal-error metric count for
-        // older ledger versions. The minimum ledger version for which we
-        // start internal-error counting is defined in the app config.
         reportInternalErrOnException =
             ledgerVersion >=
             app.getConfig().LEDGER_PROTOCOL_MIN_VERSION_INTERNAL_ERROR_REPORT;
-        medida::Timer* opTimer = nullptr;
-        if (!app.getConfig().DISABLE_SOROBAN_METRICS_FOR_TESTING)
-        {
-            opTimer =
-                &app.getMetrics().NewTimer({"ledger", "operation", "apply"});
-        }
 
         uint64_t opNum{0};
         for (size_t i = 0; i < mOperations.size(); ++i)
         {
-            std::optional<medida::TimerContext> time;
-            if (opTimer)
-            {
-                time.emplace(opTimer->TimeScope());
-            }
-
             auto const& op = mOperations[i];
             auto& opResult = txResult.getOpResultAt(i);
 
@@ -2495,13 +2462,7 @@ TransactionFrame::applyOperations(
     }
     // This is only reachable if an exception is thrown
     txResult.setInnermostError(txINTERNAL_ERROR);
-
-    // We only increase the internal-error metric count if the ledger is a
-    // newer version.
-    if (reportInternalErrOnException)
-    {
-        internalErrorCounter.inc();
-    }
+    (void)reportInternalErrOnException;
     return false;
 }
 

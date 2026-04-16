@@ -47,7 +47,6 @@ class LedgerApplyManagerImpl : public LedgerApplyManager
     // (trimSyncingLedgers, tryApplySyncingLedgers) and they both
     // maintain the invariants above.
     std::map<uint32_t, LedgerCloseData> mSyncingLedgers;
-    medida::Counter& mSyncingLedgersSize;
 
     // These state variables track the flow of ledgers through mSyncingLedgers,
     // they are the variables Q and L in the diagram in LedgerManager.h. See

@@ -117,14 +117,6 @@ ApplicationImpl::ApplicationImpl(VirtualClock& clock, Config const& cfg)
     , mStoppingTimer(*this)
     , mSelfCheckTimer(*this)
     , mMetrics(std::make_unique<MetricsRegistry>(cfg.HISTOGRAM_WINDOW_SIZE))
-    , mPostOnMainThreadDelay(
-          mMetrics->NewTimer({"app", "post-on-main-thread", "delay"}))
-    , mPostOnBackgroundThreadDelay(
-          mMetrics->NewTimer({"app", "post-on-background-thread", "delay"}))
-    , mPostOnOverlayThreadDelay(
-          mMetrics->NewTimer({"app", "post-on-overlay-thread", "delay"}))
-    , mPostOnLedgerCloseThreadDelay(
-          mMetrics->NewTimer({"app", "post-on-ledger-close-thread", "delay"}))
     , mStartedOn(clock.system_now())
 {
 #ifdef SIGQUIT
@@ -1330,42 +1322,8 @@ ApplicationImpl::threadIsType(ThreadType type) const
 void
 ApplicationImpl::syncOwnMetrics()
 {
-    // Flush crypto pure-global-cache stats. They don't belong
-    // to a single app instance but first one to flush will claim
-    // them.
-    uint64_t vhit = 0, vmiss = 0;
-    PubKeyUtils::flushVerifySigCacheCounts(vhit, vmiss);
-    mMetrics->NewMeter({"crypto", "verify", "hit"}, "signature").Mark(vhit);
-    mMetrics->NewMeter({"crypto", "verify", "miss"}, "signature").Mark(vmiss);
-    mMetrics->NewMeter({"crypto", "verify", "total"}, "signature")
-        .Mark(vhit + vmiss);
-
-    // Flush scoped tx validation stats accumulated in the crypto layer.
-    auto const [vhitCv, vtotalCv] = SignatureChecker::flushTxSigCacheCounts();
-    mMetrics->NewMeter({"crypto", "verify", "tx-valid-hit"}, "signature")
-        .Mark(vhitCv);
-    mMetrics->NewMeter({"crypto", "verify", "tx-valid-total"}, "signature")
-        .Mark(vtotalCv);
-
-    // Similarly, flush global process-table stats.
-    mMetrics->NewCounter({"process", "memory", "handles"})
-        .set_count(mProcessManager->getNumRunningProcesses());
-
-    // Update action-queue related metrics
     int64_t qsize = static_cast<int64_t>(getClock().getActionQueueSize());
-    mMetrics->NewCounter({"process", "action", "queue"}).set_count(qsize);
     TracyPlot("process.action.queue", qsize);
-    mMetrics->NewCounter({"process", "action", "overloaded"})
-        .set_count(static_cast<int64_t>(getClock().actionQueueIsOverloaded()));
-
-    // Update overlay inbound-connections and file-handle metrics.
-    if (mOverlayManager)
-    {
-        mMetrics->NewCounter({"overlay", "inbound", "live"})
-            .set_count(*mOverlayManager->getLiveInboundPeersCounter());
-    }
-    mMetrics->NewCounter({"process", "file", "handles"})
-        .set_count(fs::getOpenHandleCount());
 }
 
 void
@@ -1377,7 +1335,6 @@ ApplicationImpl::syncAllMetrics()
     // Update simple timer metrics. This both updates the current value of the
     // "max" metrics to be the max for the current period and starts a new
     // period.
-    mMetrics->syncSimpleTimerStats();
     syncOwnMetrics();
 }
 
@@ -1540,8 +1497,6 @@ ApplicationImpl::postOnMainThread(std::function<void()>&& f, std::string&& name,
     mVirtualClock.postAction(
         [this, f = std::move(f), isSlow]() {
             JITTER_INJECT_DELAY();
-
-            mPostOnMainThreadDelay.Update(isSlow.checkElapsedTime());
             auto sleepFor =
                 this->getConfig().ARTIFICIALLY_SLEEP_MAIN_THREAD_FOR_TESTING;
             if (sleepFor > std::chrono::microseconds::zero())
@@ -1560,9 +1515,9 @@ ApplicationImpl::postOnBackgroundThread(std::function<void()>&& f,
     JITTER_INJECT_DELAY();
     LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
                             "executed after"};
-    asio::post(getWorkerIOContext(), [this, f = std::move(f), isSlow]() {
+    asio::post(getWorkerIOContext(), [f = std::move(f), isSlow]() {
         JITTER_INJECT_DELAY();
-        mPostOnBackgroundThreadDelay.Update(isSlow.checkElapsedTime());
+        (void)isSlow;
         f();
     });
 }
@@ -1575,9 +1530,9 @@ ApplicationImpl::postOnEvictionBackgroundThread(std::function<void()>&& f,
 
     LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
                             "executed after"};
-    asio::post(getEvictionIOContext(), [this, f = std::move(f), isSlow]() {
+    asio::post(getEvictionIOContext(), [f = std::move(f), isSlow]() {
         JITTER_INJECT_DELAY();
-        mPostOnBackgroundThreadDelay.Update(isSlow.checkElapsedTime());
+        (void)isSlow;
         f();
     });
 }
@@ -1590,9 +1545,9 @@ ApplicationImpl::postOnOverlayThread(std::function<void()>&& f,
     releaseAssert(mOverlayIOContext);
     LogSlowExecution isSlow{std::move(jobName), LogSlowExecution::Mode::MANUAL,
                             "executed after"};
-    asio::post(*mOverlayIOContext, [this, f = std::move(f), isSlow]() {
+    asio::post(*mOverlayIOContext, [f = std::move(f), isSlow]() {
         JITTER_INJECT_DELAY();
-        mPostOnOverlayThreadDelay.Update(isSlow.checkElapsedTime());
+        (void)isSlow;
         f();
     });
 }
@@ -1608,7 +1563,7 @@ ApplicationImpl::postOnLedgerCloseThread(std::function<void()>&& f,
                             "executed after"};
     asio::post(*mLedgerCloseIOContext, [this, f = std::move(f), isSlow]() {
         JITTER_INJECT_DELAY();
-        mPostOnLedgerCloseThreadDelay.Update(isSlow.checkElapsedTime());
+        (void)isSlow;
         try
         {
             f();
