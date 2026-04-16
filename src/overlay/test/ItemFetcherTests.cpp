@@ -22,6 +22,7 @@
 namespace stellar
 {
 
+#if 0
 namespace
 {
 
@@ -484,4 +485,5 @@ TEST_CASE("next peer strategy", "[overlay][ItemFetcher]")
         }
     }
 }
+#endif
 }

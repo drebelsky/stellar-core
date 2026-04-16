@@ -37,17 +37,6 @@ PendingEnvelopes::PendingEnvelopes(Application& app, HerderImpl& herder)
     , mValueSizeCache(TXSET_CACHE_SIZE + QSET_CACHE_SIZE)
     , mRebuildQuorum(true)
     , mQuorumTracker(mApp.getConfig().NODE_SEED.getPublicKey())
-    , mProcessedCount(
-          app.getMetrics().NewCounter({"scp", "pending", "processed"}))
-    , mDiscardedCount(
-          app.getMetrics().NewCounter({"scp", "pending", "discarded"}))
-    , mFetchingCount(
-          app.getMetrics().NewCounter({"scp", "pending", "fetching"}))
-    , mReadyCount(app.getMetrics().NewCounter({"scp", "pending", "ready"}))
-    , mFetchDuration(app.getMetrics().NewTimer({"scp", "fetch", "envelope"}))
-    , mFetchTxSetTimer(app.getMetrics().NewTimer({"overlay", "fetch", "txset"}))
-    , mFetchQsetTimer(app.getMetrics().NewTimer({"overlay", "fetch", "qset"}))
-    , mCostPerSlot(app.getMetrics().NewHistogram({"scp", "cost", "per-slot"}))
 {
 }
 
@@ -117,7 +106,7 @@ PendingEnvelopes::addSCPQuorumSet(Hash const& hash, SCPQuorumSet const& q)
 {
     ZoneScoped;
     putQSet(hash, q);
-    mQuorumSetFetcher.recv(hash, mFetchQsetTimer);
+    mQuorumSetFetcher.recv(hash);
 }
 
 bool
@@ -175,10 +164,6 @@ PendingEnvelopes::updateMetrics()
     }
     TracyPlot("scp.pending.processed", processed);
     TracyPlot("scp.pending.fetching", fetching);
-    mProcessedCount.set_count(processed);
-    mDiscardedCount.set_count(discarded);
-    mFetchingCount.set_count(fetching);
-    mReadyCount.set_count(ready);
 }
 
 TxSetXDRFrameConstPtr
@@ -235,7 +220,7 @@ PendingEnvelopes::addTxSet(Hash const& hash, uint64 lastSeenSlotIndex,
     CLOG_TRACE(Herder, "Add TxSet {}", hexAbbrev(hash));
 
     putTxSet(hash, lastSeenSlotIndex, txset);
-    mTxSetFetcher.recv(hash, mFetchTxSetTimer);
+    mTxSetFetcher.recv(hash);
 }
 
 bool
@@ -358,7 +343,6 @@ PendingEnvelopes::recvSCPEnvelope(SCPEnvelope const& envelope)
         {
             std::chrono::nanoseconds durationNano =
                 mApp.getClock().now() - fetchIt->second;
-            mFetchDuration.Update(durationNano);
             Hash h = Slot::getCompanionQuorumSetHashFromStatement(
                 envelope.statement);
             CLOG_TRACE(Perf,
@@ -1005,10 +989,8 @@ PendingEnvelopes::reportCostOutliersForSlot(int64_t slotIndex,
         }
     }
 
-    if (updateMetrics && totalCost > 0)
-    {
-        mCostPerSlot.Update(static_cast<int64_t>(totalCost));
-    }
+    (void)updateMetrics;
+    (void)totalCost;
 }
 
 Json::Value

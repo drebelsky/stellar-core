@@ -69,16 +69,7 @@ Herder::create(Application& app)
 }
 
 HerderImpl::SCPMetrics::SCPMetrics(Application& app)
-    : mLostSync(app.getMetrics().NewMeter({"scp", "sync", "lost"}, "sync"))
-    , mEnvelopeEmit(
-          app.getMetrics().NewMeter({"scp", "envelope", "emit"}, "envelope"))
-    , mEnvelopeReceive(
-          app.getMetrics().NewMeter({"scp", "envelope", "receive"}, "envelope"))
-    , mCumulativeStatements(app.getMetrics().NewCounter(
-          {"scp", "memory", "cumulative-statements"}))
-    , mEnvelopeValidSig(app.getMetrics().NewMeter(
-          {"scp", "envelope", "validsig"}, "envelope"))
-    , mEnvelopeInvalidSig(app.getMetrics().NewMeter(
+    : mEnvelopeInvalidSig(app.getMetrics().NewMeter(
           {"scp", "envelope", "invalidsig"}, "envelope"))
 {
 }
@@ -215,7 +206,6 @@ void
 HerderImpl::syncMetrics()
 {
     int64_t count = getSCP().getCumulativeStatemtCount();
-    mSCPMetrics.mCumulativeStatements.set_count(count);
     TracyPlot("scp.memory.cumulative-statements", count);
 }
 
@@ -570,7 +560,6 @@ HerderImpl::broadcast(SCPEnvelope const& e)
         CLOG_DEBUG(Herder, "broadcast  s:{} i:{}", e.statement.pledges.type(),
                    e.statement.slotIndex);
 
-        mSCPMetrics.mEnvelopeEmit.Mark();
         mApp.getOverlayManager().broadcastMessage(m);
     }
 }
@@ -803,8 +792,6 @@ HerderImpl::recvSCPEnvelope(SCPEnvelope const& envelope)
     {
         return Herder::ENVELOPE_STATUS_DISCARDED;
     }
-
-    mSCPMetrics.mEnvelopeReceive.Mark();
 
     // **** first perform checks that do NOT require signature verification
     // this allows to fast fail messages that we'd throw away anyways
@@ -2624,7 +2611,6 @@ HerderImpl::herderOutOfSync()
     auto s = getJsonInfo(20).toStyledString();
     CLOG_WARNING(Herder, "Out of sync context: {}", s);
 
-    mSCPMetrics.mLostSync.Mark();
     lostSync();
 
     releaseAssert(getState() == Herder::HERDER_SYNCING_STATE);
@@ -2662,11 +2648,7 @@ HerderImpl::verifyEnvelope(SCPEnvelope const& envelope)
         envelope.statement.nodeID, envelope.signature,
         xdr::xdr_to_opaque(mApp.getNetworkID(), ENVELOPE_TYPE_SCP,
                            envelope.statement));
-    if (b)
-    {
-        mSCPMetrics.mEnvelopeValidSig.Mark();
-    }
-    else
+    if (!b)
     {
         mSCPMetrics.mEnvelopeInvalidSig.Mark();
     }

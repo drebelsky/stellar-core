@@ -197,57 +197,7 @@ class TransactionQueue
     UnorderedSet<LedgerKey> mKeysToFilter;
     std::set<AccountID> mFilteredAccounts;
 
-    // counters
-    struct QueueMetrics
-    {
-        QueueMetrics(std::vector<medida::Counter*> sizeByAge,
-                     medida::Counter& bannedTransactionsCounter,
-                     SimpleTimer& transactionsDelay,
-                     SimpleTimer& transactionsSelfDelay,
-                     medida::Counter& txsEvictedByHigherFeeTxCounter,
-                     medida::Counter& txsEvictedDueToAgeCounter,
-                     medida::Counter& txsNotAcceptedDueToLowFeeCounter,
-                     medida::Counter& txsFilteredDueToFpKeys,
-                     medida::Counter& txsFilteredDueToAccountKeys)
-            : mSizeByAge(std::move(sizeByAge))
-            , mBannedTransactionsCounter(bannedTransactionsCounter)
-            , mTransactionsDelay(transactionsDelay)
-            , mTransactionsSelfDelay(transactionsSelfDelay)
-            , mTxsEvictedByHigherFeeTxCounter(txsEvictedByHigherFeeTxCounter)
-            , mTxsEvictedDueToAgeCounter(txsEvictedDueToAgeCounter)
-            , mTxsNotAcceptedDueToLowFeeCounter(
-                  txsNotAcceptedDueToLowFeeCounter)
-            , mTxsFilteredDueToFootprintKeys(txsFilteredDueToFpKeys)
-            , mTxsFilteredDueToAccountKeys(txsFilteredDueToAccountKeys)
-        {
-        }
-        std::vector<medida::Counter*> mSizeByAge;
-        medida::Counter& mBannedTransactionsCounter;
-
-        // Keep track of time (in milliseconds) for transaction to be included
-        // in ledger using `SimpleTimer`s since medida `Timer`s are too
-        // expensive
-        SimpleTimer& mTransactionsDelay;
-        SimpleTimer& mTransactionsSelfDelay;
-
-        // The following metrics provided more detailed insight into banned
-        // transactions: mBannedTransactionsCounter includes all these, as well
-        // as invalid transactions.
-        // Count of transactions evicted by higher fee txs when queue is
-        // near its capacity.
-        medida::Counter& mTxsEvictedByHigherFeeTxCounter;
-        // Count of transactions that had low fee for too long and have not
-        // been included into several ledgers in a row.
-        medida::Counter& mTxsEvictedDueToAgeCounter;
-        // Count of transactions that were not included into queue because it
-        // is at capacity and the fee is too low to replace other txs.
-        medida::Counter& mTxsNotAcceptedDueToLowFeeCounter;
-
-        medida::Counter& mTxsFilteredDueToFootprintKeys;
-        medida::Counter& mTxsFilteredDueToAccountKeys;
-    };
-
-    std::unique_ptr<QueueMetrics> mQueueMetrics;
+    medida::Counter& mSelfCountCounter;
 
     UnorderedSet<OperationType> mFilteredTypes;
 
@@ -365,9 +315,6 @@ class ClassicTransactionQueue : public TransactionQueue
     size_t getMaxQueueSizeOps() const override;
 
   private:
-    medida::Counter& mArbTxSeenCounter;
-    medida::Counter& mArbTxDroppedCounter;
-
     virtual std::pair<Resource, std::optional<Resource>>
     getMaxResourcesToFloodThisPeriod() const override;
     virtual bool broadcastSome() override;

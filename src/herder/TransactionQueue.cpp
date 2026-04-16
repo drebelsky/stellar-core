@@ -100,6 +100,9 @@ TransactionQueue::TransactionQueue(Application& app, uint32 pendingDepth,
     : mApp(app)
     , mPendingDepth(pendingDepth)
     , mBannedTransactions(banDepth)
+    , mSelfCountCounter(app.getMetrics().NewCounter(
+          {"herder", isSoroban ? "pending-soroban-txs" : "pending-txs",
+           "self-count"}))
     , mBroadcastTimer(app)
 {
     mTxQueueLimiter =
@@ -129,33 +132,7 @@ ClassicTransactionQueue::ClassicTransactionQueue(Application& app,
                                                  uint32 banDepth,
                                                  uint32 poolLedgerMultiplier)
     : TransactionQueue(app, pendingDepth, banDepth, poolLedgerMultiplier, false)
-    // Arb tx damping is only relevant to classic txs
-    , mArbTxSeenCounter(
-          app.getMetrics().NewCounter({"herder", "arb-tx", "seen"}))
-    , mArbTxDroppedCounter(
-          app.getMetrics().NewCounter({"herder", "arb-tx", "dropped"}))
 {
-    std::vector<medida::Counter*> sizeByAge;
-    for (uint32 i = 0; i < mPendingDepth; i++)
-    {
-        sizeByAge.emplace_back(&app.getMetrics().NewCounter(
-            {"herder", "pending-txs", fmt::format(FMT_STRING("age{:d}"), i)}));
-    }
-    mQueueMetrics = std::make_unique<QueueMetrics>(
-        sizeByAge,
-        app.getMetrics().NewCounter({"herder", "pending-txs", "banned"}),
-        app.getMetrics().NewSimpleTimer({"herder", "pending-txs"}),
-        app.getMetrics().NewSimpleTimer({"herder", "pending-txs", "self-"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-txs", "evicted-due-to-low-fee-count"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-txs", "evicted-due-to-age-count"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-txs", "not-included-due-to-low-fee-count"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-txs", "filtered-due-to-fp-keys"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-txs", "filtered-due-to-account-keys"}));
     mBroadcastOpCarryover.resize(1,
                                  Resource::makeEmpty(NUM_CLASSIC_TX_RESOURCES));
 }
@@ -181,7 +158,6 @@ ClassicTransactionQueue::allowTxBroadcast(TransactionFrameBasePtr const& tx)
         auto arbPairs = findAllAssetPairsInvolvedInPaymentLoops(tx);
         if (!arbPairs.empty())
         {
-            mArbTxSeenCounter.inc();
             uint32_t maxBroadcast{0};
             std::vector<
                 UnorderedMap<AssetPair, uint32_t, AssetPairHash>::iterator>
@@ -220,10 +196,6 @@ ClassicTransactionQueue::allowTxBroadcast(TransactionFrameBasePtr const& tx)
                 {
                     i->second++;
                 }
-            }
-            else
-            {
-                mArbTxDroppedCounter.inc();
             }
         }
     }
@@ -340,12 +312,10 @@ TransactionQueue::canAdd(
     }
     if (!tx->validateSorobanTxForFlooding(mKeysToFilter))
     {
-        mQueueMetrics->mTxsFilteredDueToFootprintKeys.inc();
         return AddResult(TransactionQueue::AddResultCode::ADD_STATUS_FILTERED);
     }
     if (!force && !tx->validateAccountFilterForFlooding(mFilteredAccounts))
     {
-        mQueueMetrics->mTxsFilteredDueToAccountKeys.inc();
         return AddResult(TransactionQueue::AddResultCode::ADD_STATUS_FILTERED);
     }
 
@@ -449,7 +419,6 @@ TransactionQueue::canAdd(
     if (!canAddRes.first)
     {
         ban({tx});
-        mQueueMetrics->mTxsNotAcceptedDueToLowFeeCounter.inc();
         if (canAddRes.second != 0)
         {
             auto txResult = tx->createValidationSuccessResult();
@@ -721,7 +690,6 @@ TransactionQueue::tryAdd(TransactionFrameBasePtr tx, bool submittedFromSelf,
         // New transaction for this account, insert it and update age
         stateIter->second.mTransaction = {tx, mApp.getClock().now(),
                                           submittedFromSelf};
-        mQueueMetrics->mSizeByAge[stateIter->second.mAge]->inc();
     }
 
     // Update fee accounting
@@ -737,7 +705,6 @@ TransactionQueue::tryAdd(TransactionFrameBasePtr tx, bool submittedFromSelf,
             ++evictedCount;
             ban({txToEvict});
         });
-    mQueueMetrics->mTxsEvictedByHigherFeeTxCounter.inc(evictedCount);
     mTxQueueLimiter->addTransaction(tx);
     mKnownTxHashes[tx->getFullHash()] = tx;
 
@@ -779,7 +746,6 @@ TransactionQueue::removeApplied(Transactions const& appliedTxs)
 {
     ZoneScoped;
 
-    auto now = mApp.getClock().now();
     for (auto const& appliedTx : appliedTxs)
     {
         // If the source account is not in mAccountStates, then it has no
@@ -800,21 +766,13 @@ TransactionQueue::removeApplied(Transactions const& appliedTxs)
                 if (transaction->mTx->getSeqNum() <= appliedTx->getSeqNum())
                 {
                     auto& age = stateIter->second.mAge;
-                    mQueueMetrics->mSizeByAge[age]->dec();
                     age = 0;
 
-                    // update the metric for the time spent for applied
-                    // transactions using exact match
                     if (transaction->mTx->getFullHash() ==
-                        appliedTx->getFullHash())
+                            appliedTx->getFullHash() &&
+                        transaction->mSubmittedFromSelf)
                     {
-                        auto elapsed = now - transaction->mInsertionTime;
-                        mQueueMetrics->mTransactionsDelay.Update(elapsed);
-                        if (transaction->mSubmittedFromSelf)
-                        {
-                            mQueueMetrics->mTransactionsSelfDelay.Update(
-                                elapsed);
-                        }
+                        mSelfCountCounter.inc();
                     }
 
                     // WARNING: stateIter and everything that references it
@@ -851,10 +809,7 @@ TransactionQueue::ban(Transactions const& banTxs)
         releaseAssert(
             transactionsByAccount.emplace(tx->getSourceID(), tx).second);
         CLOG_DEBUG(Tx, "Ban transaction {}", hexAbbrev(tx->getFullHash()));
-        if (bannedFront.emplace(tx->getFullHash()).second)
-        {
-            mQueueMetrics->mBannedTransactionsCounter.inc();
-        }
+        bannedFront.emplace(tx->getFullHash());
     }
 
     for (auto const& kv : transactionsByAccount)
@@ -871,7 +826,6 @@ TransactionQueue::ban(Transactions const& banTxs)
             if (transaction &&
                 transaction->mTx->getFullHash() == kv.second->getFullHash())
             {
-                mQueueMetrics->mSizeByAge[stateIter->second.mAge]->dec();
                 // WARNING: stateIter and everything that references it may
                 // be invalid from this point onward and should not be used.
                 dropTransaction(stateIter);
@@ -908,13 +862,9 @@ TransactionQueue::shift()
     mBannedTransactions.emplace_front();
     mArbitrageFloodDamping.clear();
 
-    auto sizes = std::vector<int64_t>{};
-    sizes.resize(mPendingDepth);
-
     auto& bannedFront = mBannedTransactions.front();
     auto end = std::end(mAccountStates);
     auto it = std::begin(mAccountStates);
-    int evictedDueToAge = 0;
     while (it != end)
     {
         // If mTransactions is empty then mAge is always 0. This can occur
@@ -930,17 +880,12 @@ TransactionQueue::shift()
         {
             if (it->second.mTransaction)
             {
-                // This never invalidates it because
-                //     it->second.mTransaction
-                // otherwise we couldn't have reached this line.
                 prepareDropTransaction(it->second);
                 CLOG_DEBUG(
                     Tx, "Ban transaction {}",
                     hexAbbrev(it->second.mTransaction->mTx->getFullHash()));
                 bannedFront.insert(it->second.mTransaction->mTx->getFullHash());
-                mQueueMetrics->mBannedTransactionsCounter.inc();
                 it->second.mTransaction.reset();
-                ++evictedDueToAge;
             }
             if (it->second.mTotalFees == 0)
             {
@@ -953,15 +898,8 @@ TransactionQueue::shift()
         }
         else
         {
-            sizes[it->second.mAge] +=
-                static_cast<int>(it->second.mTransaction.has_value());
             ++it;
         }
-    }
-    mQueueMetrics->mTxsEvictedDueToAgeCounter.inc(evictedDueToAge);
-    for (size_t i = 0; i < sizes.size(); i++)
-    {
-        mQueueMetrics->mSizeByAge[i]->set_count(sizes[i]);
     }
     mTxQueueLimiter->resetEvictionState();
     // pick a new randomizing seed for tie breaking
@@ -1098,30 +1036,6 @@ SorobanTransactionQueue::SorobanTransactionQueue(
     uint32 poolLedgerMultiplier, UnorderedSet<LedgerKey> const& keysToFilter)
     : TransactionQueue(app, pendingDepth, banDepth, poolLedgerMultiplier, true)
 {
-    std::vector<medida::Counter*> sizeByAge;
-    for (uint32 i = 0; i < mPendingDepth; i++)
-    {
-        sizeByAge.emplace_back(&app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs",
-             fmt::format(FMT_STRING("age{:d}"), i)}));
-    }
-    mQueueMetrics = std::make_unique<QueueMetrics>(
-        sizeByAge,
-        app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs", "banned"}),
-        app.getMetrics().NewSimpleTimer({"herder", "pending-soroban-txs"}),
-        app.getMetrics().NewSimpleTimer(
-            {"herder", "pending-soroban-txs", "self-"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs", "evicted-due-to-low-fee-count"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs", "evicted-due-to-age-count"}),
-        app.getMetrics().NewCounter({"herder", "pending-soroban-txs",
-                                     "not-included-due-to-low-fee-count"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs", "filtered-due-to-fp-keys"}),
-        app.getMetrics().NewCounter(
-            {"herder", "pending-soroban-txs", "filtered-due-to-account-keys"}));
     mBroadcastOpCarryover.resize(1, Resource::makeEmptySoroban());
     mKeysToFilter = keysToFilter;
 }

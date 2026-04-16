@@ -49,25 +49,6 @@ HerderSCPDriver::getHashOf(std::vector<xdr::opaque_vec<>> const& vals) const
     return hasher.finish();
 }
 
-HerderSCPDriver::SCPMetrics::SCPMetrics(Application& app)
-    : mEnvelopeSign(
-          app.getMetrics().NewMeter({"scp", "envelope", "sign"}, "envelope"))
-    , mValueValid(app.getMetrics().NewMeter({"scp", "value", "valid"}, "value"))
-    , mValueInvalid(
-          app.getMetrics().NewMeter({"scp", "value", "invalid"}, "value"))
-    , mCombinedCandidates(app.getMetrics().NewMeter(
-          {"scp", "nomination", "combinecandidates"}, "value"))
-    , mNominateToPrepare(
-          app.getMetrics().NewTimer({"scp", "timing", "nominated"}))
-    , mPrepareToExternalize(
-          app.getMetrics().NewTimer({"scp", "timing", "externalized"}))
-    , mFirstToSelfExternalizeLag(app.getMetrics().NewTimer(
-          {"scp", "timing", "first-to-self-externalize-lag"}))
-    , mSelfToOthersExternalizeLag(app.getMetrics().NewTimer(
-          {"scp", "timing", "self-to-others-externalize-lag"}))
-{
-}
-
 HerderSCPDriver::HerderSCPDriver(Application& app, HerderImpl& herder,
                                  Upgrades const& upgrades,
                                  PendingEnvelopes& pendingEnvelopes)
@@ -78,13 +59,6 @@ HerderSCPDriver::HerderSCPDriver(Application& app, HerderImpl& herder,
     , mPendingEnvelopes{pendingEnvelopes}
     , mSCP{*this, mApp.getConfig().NODE_SEED.getPublicKey(),
            mApp.getConfig().NODE_IS_VALIDATOR, mApp.getConfig().QUORUM_SET}
-    , mSCPMetrics{mApp}
-    , mNominateTimeout{mApp.getMetrics().NewHistogram(
-          {"scp", "timeout", "nominate"})}
-    , mPrepareTimeout{mApp.getMetrics().NewHistogram(
-          {"scp", "timeout", "prepare"})}
-    , mUniqueValues{mApp.getMetrics().NewHistogram(
-          {"scp", "slot", "values-referenced"})}
     , mLedgerSeqNominating(0)
     , mTxSetValidCache(TXSETVALID_CACHE_SIZE)
 {
@@ -160,7 +134,6 @@ void
 HerderSCPDriver::signEnvelope(SCPEnvelope& envelope)
 {
     ZoneScoped;
-    mSCPMetrics.mEnvelopeSign.Mark();
     mHerder.signEnvelope(mApp.getConfig().NODE_SEED, envelope);
 }
 
@@ -398,7 +371,6 @@ HerderSCPDriver::validateValue(uint64_t slotIndex, Value const& value,
     StellarValue b;
     if (!deserializeAndValidateStellarValue(value, b))
     {
-        mSCPMetrics.mValueInvalid.Mark();
         return SCPDriver::kInvalidValue;
     }
 
@@ -418,14 +390,6 @@ HerderSCPDriver::validateValue(uint64_t slotIndex, Value const& value,
         }
     }
 
-    if (res)
-    {
-        mSCPMetrics.mValueValid.Mark();
-    }
-    else
-    {
-        mSCPMetrics.mValueInvalid.Mark();
-    }
     return res;
 }
 
@@ -659,7 +623,6 @@ HerderSCPDriver::combineCandidates(uint64_t slotIndex,
 {
     ZoneScoped;
     CLOG_DEBUG(Herder, "Combining {} candidates", candidates.size());
-    mSCPMetrics.mCombinedCandidates.Mark(candidates.size());
 
     std::map<LedgerUpgradeType, LedgerUpgrade> upgrades;
 
@@ -954,10 +917,6 @@ HerderSCPDriver::logQuorumInformationAndUpdateMetrics(uint64_t index)
 
     getSCP().processCurrentState(index, collectReferencedHashes,
                                  /* forceSelf */ true);
-    if (!referencedValues.empty())
-    {
-        mUniqueValues.Update(referencedValues.size());
-    }
 
     // Set mMissingNodes to the intersection of itself and the set of any
     // nodes missing in the latest slots.
@@ -1107,16 +1066,9 @@ HerderSCPDriver::startCheckForDeadNodesInterval()
 }
 
 double
-HerderSCPDriver::getExternalizeLag(NodeID const& id) const
+HerderSCPDriver::getExternalizeLag(NodeID const&) const
 {
-    auto n = mQSetLag.find(id);
-
-    if (n == mQSetLag.end())
-    {
-        return 0.0;
-    }
-
-    return n->second.GetSnapshot().get75thPercentile();
+    return 0.0;
 }
 
 void
@@ -1156,7 +1108,6 @@ HerderSCPDriver::recordSCPExternalizeEvent(uint64_t slotIndex, NodeID const& id,
         if (!timing.mSelfExternalize)
         {
             recordLogTiming(*timing.mFirstExternalize, now,
-                            mSCPMetrics.mFirstToSelfExternalizeLag,
                             "first to self externalize lag",
                             std::chrono::nanoseconds::zero(), slotIndex);
             mApp.getOverlayManager().getSurveyManager().modifyNodeData(
@@ -1180,7 +1131,6 @@ HerderSCPDriver::recordSCPExternalizeEvent(uint64_t slotIndex, NodeID const& id,
         {
             recordLogTiming(
                 *timing.mSelfExternalize, now,
-                mSCPMetrics.mSelfToOthersExternalizeLag,
                 fmt::format(FMT_STRING("self to {} externalize lag"),
                             toShortString(id)),
                 std::chrono::nanoseconds::zero(), slotIndex);
@@ -1193,9 +1143,7 @@ HerderSCPDriver::recordSCPExternalizeEvent(uint64_t slotIndex, NodeID const& id,
                 });
         }
 
-        // Record lag for other nodes
-        auto& lag = mQSetLag[id];
-        recordLogTiming(*timing.mFirstExternalize, now, lag,
+        recordLogTiming(*timing.mFirstExternalize, now,
                         fmt::format(FMT_STRING("first to {} externalize lag"),
                                     toShortString(id)),
                         std::chrono::nanoseconds::zero(), slotIndex);
@@ -1205,9 +1153,8 @@ HerderSCPDriver::recordSCPExternalizeEvent(uint64_t slotIndex, NodeID const& id,
 void
 HerderSCPDriver::recordLogTiming(VirtualClock::time_point start,
                                  VirtualClock::time_point end,
-                                 medida::Timer& timer,
                                  std::string const& logStr,
-                                 std::chrono::nanoseconds threshold,
+                                 std::chrono::nanoseconds,
                                  uint64_t slotIndex)
 {
     auto delta =
@@ -1215,10 +1162,6 @@ HerderSCPDriver::recordLogTiming(VirtualClock::time_point start,
     CLOG_DEBUG(
         Herder, "{} delta for slot {} is {} ms", logStr, slotIndex,
         std::chrono::duration_cast<std::chrono::milliseconds>(delta).count());
-    if (delta >= threshold)
-    {
-        timer.Update(delta);
-    }
 };
 
 void
@@ -1242,9 +1185,6 @@ HerderSCPDriver::recordSCPExecutionMetrics(uint64_t slotIndex)
 
     auto& SCPTiming = SCPTimingIt->second;
 
-    mNominateTimeout.Update(SCPTiming.mNominationTimeoutCount);
-    mPrepareTimeout.Update(SCPTiming.mPrepareTimeoutCount);
-
     if (SCPTiming.mNominationTimeoutCount > 0)
     {
         auto const leaders = getSCP().getNominationLeaders(slotIndex);
@@ -1267,8 +1207,7 @@ HerderSCPDriver::recordSCPExecutionMetrics(uint64_t slotIndex)
     if (SCPTiming.mNominationStart && SCPTiming.mPrepareStart)
     {
         recordLogTiming(*SCPTiming.mNominationStart, *SCPTiming.mPrepareStart,
-                        mSCPMetrics.mNominateToPrepare, "Nominate", threshold,
-                        slotIndex);
+                        "Nominate", threshold, slotIndex);
     }
 
     // Compute prepare time
@@ -1292,8 +1231,7 @@ HerderSCPDriver::recordSCPExecutionMetrics(uint64_t slotIndex)
     if (SCPTiming.mPrepareStart)
     {
         recordLogTiming(*SCPTiming.mPrepareStart, externalizeStart,
-                        mSCPMetrics.mPrepareToExternalize, "Prepare", threshold,
-                        slotIndex);
+                        "Prepare", threshold, slotIndex);
     }
 }
 

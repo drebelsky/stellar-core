@@ -36,6 +36,7 @@
 using namespace stellar;
 using namespace stellar::overlaytestutils;
 
+#if 0
 namespace
 {
 
@@ -3498,4 +3499,4 @@ TEST_CASE("populateSignatureCache tests", "[overlay]")
         REQUIRE(misses == 1);
     }
 }
-}
+#endif

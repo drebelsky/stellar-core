@@ -337,7 +337,6 @@ TCPPeer::messageSender()
     CLOG_DEBUG(Overlay, "messageSender {} - b:{} n:{}/{}", mIPAddress,
                expected_length, mThreadVars.getWriteBuffers().size(),
                mThreadVars.getWriteQueue().size());
-    mOverlayMetrics.mAsyncWrite.Mark();
     mPeerMetrics.mAsyncWrite++;
     auto self = static_pointer_cast<TCPPeer>(shared_from_this());
     asio::async_write(
@@ -366,7 +365,7 @@ TCPPeer::messageSender()
             while (!self->mThreadVars.getWriteBuffers().empty())
             {
                 i->mCompletedTime = now;
-                i->recordWriteTiming(self->mOverlayMetrics, self->mPeerMetrics);
+                i->recordWriteTiming(self->mPeerMetrics);
                 auto const& msg = *(i->mMsgPtr);
                 if (OverlayManager::isFloodMessage(msg))
                 {
@@ -394,15 +393,12 @@ TCPPeer::messageSender()
 }
 
 void
-TCPPeer::TimestampedMessage::recordWriteTiming(OverlayMetrics& metrics,
-                                               PeerMetrics& peerMetrics)
+TCPPeer::TimestampedMessage::recordWriteTiming(PeerMetrics& peerMetrics)
 {
     auto qdelay = std::chrono::duration_cast<std::chrono::nanoseconds>(
         mIssuedTime - mEnqueuedTime);
     auto wdelay = std::chrono::duration_cast<std::chrono::nanoseconds>(
         mCompletedTime - mIssuedTime);
-    metrics.mMessageDelayInWriteQueueTimer.Update(qdelay);
-    metrics.mMessageDelayInAsyncWriteTimer.Update(wdelay);
     peerMetrics.mMessageDelayInWriteQueueTimer.Update(qdelay);
     peerMetrics.mMessageDelayInAsyncWriteTimer.Update(wdelay);
 }
@@ -425,9 +421,6 @@ TCPPeer::writeHandler(asio::error_code const& error,
     {
         if (isConnected(guard))
         {
-            // Only emit a warning if we have an error while connected;
-            // errors during shutdown or connection are common/expected.
-            mOverlayMetrics.mErrorWrite.Mark();
             CLOG_ERROR(Overlay, "Error during sending message to {}",
                        mIPAddress);
         }
@@ -435,9 +428,6 @@ TCPPeer::writeHandler(asio::error_code const& error,
     }
     else if (bytes_transferred != 0)
     {
-        mOverlayMetrics.mMessageWrite.Mark(messages_transferred);
-        mOverlayMetrics.mByteWrite.Mark(bytes_transferred);
-
         mPeerMetrics.mMessageWrite += messages_transferred;
         mPeerMetrics.mByteWrite += bytes_transferred;
     }
@@ -448,7 +438,6 @@ TCPPeer::noteErrorReadHeader(size_t nbytes, asio::error_code const& ec)
 {
     releaseAssert(!threadIsMain() || !useBackgroundThread());
     receivedBytes(nbytes, false);
-    mOverlayMetrics.mErrorRead.Mark();
     std::string msg("error reading message header: ");
     msg.append(ec.message());
     drop(msg, Peer::DropDirection::WE_DROPPED_REMOTE);
@@ -459,7 +448,6 @@ TCPPeer::noteShortReadHeader(size_t nbytes)
 {
     releaseAssert(!threadIsMain() || !useBackgroundThread());
     receivedBytes(nbytes, false);
-    mOverlayMetrics.mErrorRead.Mark();
     drop("short read of message header",
          Peer::DropDirection::WE_DROPPED_REMOTE);
 }
@@ -477,7 +465,6 @@ TCPPeer::noteErrorReadBody(size_t nbytes, asio::error_code const& ec)
     releaseAssert(!threadIsMain() || !useBackgroundThread());
 
     receivedBytes(nbytes, false);
-    mOverlayMetrics.mErrorRead.Mark();
     std::string msg("error reading message body: ");
     msg.append(ec.message());
     drop(msg, Peer::DropDirection::WE_DROPPED_REMOTE);
@@ -489,7 +476,6 @@ TCPPeer::noteShortReadBody(size_t nbytes)
     releaseAssert(!threadIsMain() || !useBackgroundThread());
 
     receivedBytes(nbytes, false);
-    mOverlayMetrics.mErrorRead.Mark();
     drop("short read of message body", Peer::DropDirection::WE_DROPPED_REMOTE);
 }
 
@@ -648,7 +634,6 @@ TCPPeer::startRead()
         // If there wasn't enough readable in the buffered stream to even get a
         // header (message length), issue an async_read and hope that the
         // buffering pulls in much more than just the 4 bytes we ask for here.
-        mOverlayMetrics.mAsyncRead.Mark();
         mPeerMetrics.mAsyncRead++;
         auto self = static_pointer_cast<TCPPeer>(shared_from_this());
         asio::async_read(*(mSocket.get()),
@@ -692,7 +677,6 @@ TCPPeer::getIncomingMsgLength()
          ((!isAuthenticated(guard) && (length > MAX_UNAUTH_MESSAGE_SIZE)) ||
           length > MAX_MESSAGE_SIZE)))
     {
-        mOverlayMetrics.mErrorRead.Mark();
         CLOG_ERROR(Overlay, "{} TCP: message size unacceptable: {}{}",
                    mIPAddress, length,
                    (isAuthenticated(guard) ? "" : " while not authenticated"));

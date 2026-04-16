@@ -20,11 +20,6 @@
  * is purged from the FloodGate when the ledger closes.
  */
 
-namespace medida
-{
-class Counter;
-}
-
 namespace stellar
 {
 
@@ -45,9 +40,6 @@ class Floodgate
 
     std::map<Hash, FloodRecord::pointer> mFloodMap;
     Application& mApp;
-    medida::Counter& mFloodMapSize;
-    medida::Meter& mSendFromBroadcast;
-    medida::Meter& mMessagesAdvertised;
     bool mShuttingDown;
 
   public:

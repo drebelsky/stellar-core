@@ -367,10 +367,8 @@ Peer::receivedBytes(size_t byteCount, bool gotFullMessage)
     mLastRead = mAppConnector.now();
     if (gotFullMessage)
     {
-        mOverlayMetrics.mMessageRead.Mark();
         ++mPeerMetrics.mMessageRead;
     }
-    mOverlayMetrics.mByteRead.Mark(byteCount);
     mPeerMetrics.mByteRead += byteCount;
 }
 
@@ -451,7 +449,6 @@ Peer::recurrentTimerExpired(asio::error_code const& error)
         if (((now - mLastRead.load()) >= timeout) &&
             ((now - mLastWrite.load()) >= timeout))
         {
-            mOverlayMetrics.mTimeoutIdle.Mark();
             drop("idle timeout", Peer::DropDirection::WE_DROPPED_REMOTE);
         }
         else if (mFlowControl && mFlowControl->noOutboundCapacityTimeout(
@@ -462,7 +459,6 @@ Peer::recurrentTimerExpired(asio::error_code const& error)
         }
         else if (((now - mEnqueueTimeOfLastWrite.load()) >= stragglerTimeout))
         {
-            mOverlayMetrics.mTimeoutStraggler.Mark();
             drop("straggling (cannot keep up)",
                  Peer::DropDirection::WE_DROPPED_REMOTE);
         }
@@ -834,69 +830,6 @@ Peer::sendMessage(std::shared_ptr<StellarMessage const> msg, bool log)
     CLOG_TRACE(Overlay, "send: {} to : {}", msgSummary(*msg),
                mAppConnector.getConfig().toShortString(mPeerID));
 
-    switch (msg->type())
-    {
-    case ERROR_MSG:
-        mOverlayMetrics.mSendErrorMeter.Mark();
-        break;
-    case HELLO:
-        mOverlayMetrics.mSendHelloMeter.Mark();
-        break;
-    case AUTH:
-        mOverlayMetrics.mSendAuthMeter.Mark();
-        break;
-    case DONT_HAVE:
-        mOverlayMetrics.mSendDontHaveMeter.Mark();
-        break;
-    case PEERS:
-        mOverlayMetrics.mSendPeersMeter.Mark();
-        break;
-    case GET_TX_SET:
-        mOverlayMetrics.mSendGetTxSetMeter.Mark();
-        break;
-    case TX_SET:
-    case GENERALIZED_TX_SET:
-        mOverlayMetrics.mSendTxSetMeter.Mark();
-        break;
-    case TRANSACTION:
-        mOverlayMetrics.mSendTransactionMeter.Mark();
-        break;
-    case GET_SCP_QUORUMSET:
-        mOverlayMetrics.mSendGetSCPQuorumSetMeter.Mark();
-        break;
-    case SCP_QUORUMSET:
-        mOverlayMetrics.mSendSCPQuorumSetMeter.Mark();
-        break;
-    case SCP_MESSAGE:
-        mOverlayMetrics.mSendSCPMessageSetMeter.Mark();
-        break;
-    case GET_SCP_STATE:
-        mOverlayMetrics.mSendGetSCPStateMeter.Mark();
-        break;
-    case TIME_SLICED_SURVEY_REQUEST:
-        mOverlayMetrics.mSendSurveyRequestMeter.Mark();
-        break;
-    case TIME_SLICED_SURVEY_RESPONSE:
-        mOverlayMetrics.mSendSurveyResponseMeter.Mark();
-        break;
-    case TIME_SLICED_SURVEY_START_COLLECTING:
-        mOverlayMetrics.mSendStartSurveyCollectingMeter.Mark();
-        break;
-    case TIME_SLICED_SURVEY_STOP_COLLECTING:
-        mOverlayMetrics.mSendStopSurveyCollectingMeter.Mark();
-        break;
-    case SEND_MORE:
-    case SEND_MORE_EXTENDED:
-        mOverlayMetrics.mSendSendMoreMeter.Mark();
-        break;
-    case FLOOD_ADVERT:
-        mOverlayMetrics.mSendFloodAdvertMeter.Mark();
-        break;
-    case FLOOD_DEMAND:
-        mOverlayMetrics.mSendFloodDemandMeter.Mark();
-        break;
-    };
-
     releaseAssert(mFlowControl);
     if (OverlayManager::isFloodMessage(*msg))
     {
@@ -1249,135 +1182,81 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
     switch (stellarMsg.type())
     {
     case ERROR_MSG:
-    {
-        auto t = mOverlayMetrics.mRecvErrorTimer.TimeScope();
         recvError(stellarMsg);
-    }
-    break;
+        break;
 
     case HELLO:
-    {
-        auto t = mOverlayMetrics.mRecvHelloTimer.TimeScope();
         this->recvHello(stellarMsg.hello());
-    }
-    break;
+        break;
 
     case AUTH:
-    {
-        auto t = mOverlayMetrics.mRecvAuthTimer.TimeScope();
         this->recvAuth(stellarMsg);
-    }
-    break;
+        break;
 
     case DONT_HAVE:
-    {
-        auto t = mOverlayMetrics.mRecvDontHaveTimer.TimeScope();
         recvDontHave(stellarMsg);
-    }
-    break;
+        break;
 
     case PEERS:
-    {
-        auto t = mOverlayMetrics.mRecvPeersTimer.TimeScope();
         recvPeers(stellarMsg);
-    }
-    break;
+        break;
 
     case TIME_SLICED_SURVEY_REQUEST:
-    {
-        auto t = mOverlayMetrics.mRecvSurveyRequestTimer.TimeScope();
         recvSurveyRequestMessage(stellarMsg);
-    }
-    break;
+        break;
 
     case TIME_SLICED_SURVEY_RESPONSE:
-    {
-        auto t = mOverlayMetrics.mRecvSurveyResponseTimer.TimeScope();
         recvSurveyResponseMessage(stellarMsg);
-    }
-    break;
+        break;
 
     case TIME_SLICED_SURVEY_START_COLLECTING:
-    {
-        auto t = mOverlayMetrics.mRecvStartSurveyCollectingTimer.TimeScope();
         recvSurveyStartCollectingMessage(stellarMsg);
-    }
-    break;
+        break;
 
     case TIME_SLICED_SURVEY_STOP_COLLECTING:
-    {
-        auto t = mOverlayMetrics.mRecvStopSurveyCollectingTimer.TimeScope();
         recvSurveyStopCollectingMessage(stellarMsg);
-    }
-    break;
+        break;
 
     case GET_TX_SET:
-    {
-        auto t = mOverlayMetrics.mRecvGetTxSetTimer.TimeScope();
         recvGetTxSet(stellarMsg);
-    }
-    break;
+        break;
 
     case TX_SET:
-    {
 #ifdef BUILD_TESTS
         if (OverlayManager::isFloodMessage(stellarMsg))
         {
-            auto t = mOverlayMetrics.mRecvTxBatchTimer.TimeScope();
             recvTxBatch(*msgTracker);
         }
         else
 #endif
         {
-            auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
             recvTxSet(stellarMsg);
         }
-    }
-    break;
+        break;
 
     case GENERALIZED_TX_SET:
-    {
-        auto t = mOverlayMetrics.mRecvTxSetTimer.TimeScope();
         recvGeneralizedTxSet(stellarMsg);
-    }
-    break;
+        break;
 
     case TRANSACTION:
-    {
-        auto start = mAppConnector.now();
         recvTransaction(*msgTracker);
-        auto end = mAppConnector.now();
-        mOverlayMetrics.mRecvTransactionTimer.Update(end - start);
-    }
-    break;
+        break;
 
     case GET_SCP_QUORUMSET:
-    {
-        auto t = mOverlayMetrics.mRecvGetSCPQuorumSetTimer.TimeScope();
         recvGetSCPQuorumSet(stellarMsg);
-    }
-    break;
+        break;
 
     case SCP_QUORUMSET:
-    {
-        auto t = mOverlayMetrics.mRecvSCPQuorumSetTimer.TimeScope();
         recvSCPQuorumSet(stellarMsg);
-    }
-    break;
+        break;
 
     case SCP_MESSAGE:
-    {
-        auto t = mOverlayMetrics.mRecvSCPMessageTimer.TimeScope();
         recvSCPMessage(*msgTracker);
-    }
-    break;
+        break;
 
     case GET_SCP_STATE:
-    {
-        auto t = mOverlayMetrics.mRecvGetSCPStateTimer.TimeScope();
         recvGetSCPState(stellarMsg);
-    }
-    break;
+        break;
     case SEND_MORE:
     case SEND_MORE_EXTENDED:
     {
@@ -1388,23 +1267,17 @@ Peer::recvRawMessage(std::shared_ptr<CapacityTrackedMessage> msgTracker)
             drop(errorMsg, Peer::DropDirection::WE_DROPPED_REMOTE);
             return;
         }
-        auto t = mOverlayMetrics.mRecvSendMoreTimer.TimeScope();
         recvSendMore(stellarMsg);
     }
     break;
 
     case FLOOD_ADVERT:
-    {
-        auto t = mOverlayMetrics.mRecvFloodAdvertTimer.TimeScope();
         recvFloodAdvert(stellarMsg);
-    }
-    break;
+        break;
 
     case FLOOD_DEMAND:
-    {
-        auto t = mOverlayMetrics.mRecvFloodDemandTimer.TimeScope();
         recvFloodDemand(stellarMsg);
-    }
+        break;
     }
 }
 
@@ -1447,11 +1320,8 @@ Peer::recvTxBatch(CapacityTrackedMessage const& msgTracker)
 
     for (auto const& [blake2Hash, tx] : msgTracker.getTxMap())
     {
-        auto start = mAppConnector.now();
         mAppConnector.getOverlayManager().recvTransaction(
             tx, shared_from_this(), blake2Hash);
-        mOverlayMetrics.mRecvTransactionTimer.Update(mAppConnector.now() -
-                                                     start);
     }
 }
 #endif
@@ -1571,7 +1441,6 @@ Peer::maybeProcessPingResponse(Hash const& id)
             mPingSentTime = PING_NOT_SENT;
             CLOG_DEBUG(Overlay, "Latency {}: {} ms", toString(),
                        mLastPing.count());
-            mOverlayMetrics.mConnectionLatencyTimer.Update(mLastPing);
             mAppConnector.getOverlayManager().getSurveyManager().modifyPeerData(
                 *this, [&](CollectingPeerData& peerData) {
                     peerData.mLatencyMsHistogram.Update(mLastPing.count());
@@ -1636,15 +1505,6 @@ Peer::recvSCPMessage(CapacityTrackedMessage const& msg)
     SCPEnvelope const& envelope = msg.getMessage().envelope();
 
     auto type = msg.getMessage().envelope().statement.pledges.type();
-    auto t = (type == SCP_ST_PREPARE
-                  ? mOverlayMetrics.mRecvSCPPrepareTimer.TimeScope()
-                  : (type == SCP_ST_CONFIRM
-                         ? mOverlayMetrics.mRecvSCPConfirmTimer.TimeScope()
-                         : (type == SCP_ST_EXTERNALIZE
-                                ? mOverlayMetrics.mRecvSCPExternalizeTimer
-                                      .TimeScope()
-                                : (mOverlayMetrics.mRecvSCPNominateTimer
-                                       .TimeScope()))));
     std::string codeStr;
     switch (type)
     {
@@ -2142,8 +2002,6 @@ Peer::sendTxDemand(TxDemandVector&& demands)
         auto msg = std::make_shared<StellarMessage>();
         msg->type(FLOOD_DEMAND);
         msg->floodDemand().txHashes = std::move(demands);
-        mOverlayMetrics.mMessagesDemanded.Mark(
-            msg->floodDemand().txHashes.size());
         mAppConnector.postOnMainThread(
             [self = shared_from_this(), msg = std::move(msg)]() {
                 self->sendMessage(msg);

@@ -81,16 +81,6 @@ class PendingEnvelopes
     bool mRebuildQuorum;
     QuorumTracker mQuorumTracker;
 
-    medida::Counter& mProcessedCount;
-    medida::Counter& mDiscardedCount;
-    medida::Counter& mFetchingCount;
-    medida::Counter& mReadyCount;
-    medida::Timer& mFetchDuration;
-    medida::Timer& mFetchTxSetTimer;
-    medida::Timer& mFetchQsetTimer;
-    // Tracked cost per slot
-    medida::Histogram& mCostPerSlot;
-
     // discards all SCP envelopes that use QSet with a given hash,
     // as it is not sane QSet
     void discardSCPEnvelopesWithQSet(Hash const& hash);

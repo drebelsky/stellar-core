@@ -14,7 +14,6 @@
 #include "util/Fs.h"
 #include "util/GlobalChecks.h"
 #include "util/Logging.h"
-#include "util/MetricsRegistry.h"
 #include "util/Timer.h"
 #include "util/types.h"
 #include <error.h>
@@ -31,8 +30,6 @@
 #include "overlay/OverlayManager.h"
 #include "overlay/PeerManager.h"
 
-#include "medida/counter.h"
-#include "medida/timer.h"
 #include "xdr/Stellar-ledger-entries.h"
 
 #include <lib/soci/src/backends/sqlite3/soci-sqlite3.h>
@@ -199,8 +196,6 @@ class DatabaseConfigureSessionOp : public DatabaseTypeSpecificOperation<void>
 
 Database::Database(Application& app)
     : mApp(app)
-    , mQueryMeter(
-          app.getMetrics().NewMeter({"database", "query", "exec"}, "query"))
     , mSession("main")
     , mMiscSession("misc")
 {
@@ -533,51 +528,6 @@ Database::getMiscDBSchemaVersion()
     releaseAssert(canUseMiscDB());
     return getVersion(mApp, PersistentState::kMiscDatabaseSchema,
                       getMiscSession());
-}
-
-medida::TimerContext
-Database::getInsertTimer(std::string const& entityName)
-{
-    mQueryMeter.Mark();
-    return mApp.getMetrics()
-        .NewTimer({"database", "insert", entityName})
-        .TimeScope();
-}
-
-medida::TimerContext
-Database::getSelectTimer(std::string const& entityName)
-{
-    mQueryMeter.Mark();
-    return mApp.getMetrics()
-        .NewTimer({"database", "select", entityName})
-        .TimeScope();
-}
-
-medida::TimerContext
-Database::getDeleteTimer(std::string const& entityName)
-{
-    mQueryMeter.Mark();
-    return mApp.getMetrics()
-        .NewTimer({"database", "delete", entityName})
-        .TimeScope();
-}
-
-medida::TimerContext
-Database::getUpdateTimer(std::string const& entityName)
-{
-    mQueryMeter.Mark();
-    return mApp.getMetrics()
-        .NewTimer({"database", "update", entityName})
-        .TimeScope();
-}
-
-medida::TimerContext
-Database::getUpsertTimer(std::string const& entityName)
-{
-    mQueryMeter.Mark();
-    return mApp.getMetrics()
-        .NewTimer({"database", "upsert", entityName})
-        .TimeScope();
 }
 
 void

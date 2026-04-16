@@ -73,20 +73,10 @@ OverlayManagerImpl::canAcceptOutboundPeer(PeerBareAddress const& address) const
 }
 
 OverlayManagerImpl::PeersList::PeersList(OverlayManagerImpl& overlayManager,
-                                         MetricsRegistry& metricsRegistry,
                                          std::string const& directionString,
-                                         std::string const& cancelledName,
                                          int maxAuthenticatedCount,
                                          std::shared_ptr<SurveyManager> sm)
-    : mConnectionsAttempted(metricsRegistry.NewMeter(
-          {"overlay", directionString, "attempt"}, "connection"))
-    , mConnectionsEstablished(metricsRegistry.NewMeter(
-          {"overlay", directionString, "establish"}, "connection"))
-    , mConnectionsDropped(metricsRegistry.NewMeter(
-          {"overlay", directionString, "drop"}, "connection"))
-    , mConnectionsCancelled(metricsRegistry.NewMeter(
-          {"overlay", directionString, cancelledName}, "connection"))
-    , mOverlayManager(overlayManager)
+    : mOverlayManager(overlayManager)
     , mDirectionString(directionString)
     , mMaxAuthenticatedCount(maxAuthenticatedCount)
     , mSurveyManager(sm)
@@ -137,7 +127,6 @@ OverlayManagerImpl::PeersList::removePeer(Peer* peer)
         // thread is done processing it
         mDropped.insert(*pendingIt);
         mPending.erase(pendingIt);
-        mConnectionsDropped.Mark();
         return;
     }
 
@@ -150,7 +139,6 @@ OverlayManagerImpl::PeersList::removePeer(Peer* peer)
         // thread is done processing it
         mDropped.insert(authentiatedIt->second);
         mAuthenticated.erase(authentiatedIt);
-        mConnectionsDropped.Mark();
         mSurveyManager->recordDroppedPeer(*peer);
         return;
     }
@@ -176,7 +164,6 @@ OverlayManagerImpl::PeersList::moveToAuthenticated(Peer::pointer peer)
             "Trying to move non-pending {} peer {} to authenticated list",
             mDirectionString, peer->toString());
         CLOG_WARNING(Overlay, "{}", REPORT_INTERNAL_BUG);
-        mConnectionsCancelled.Mark();
         return false;
     }
 
@@ -188,7 +175,6 @@ OverlayManagerImpl::PeersList::moveToAuthenticated(Peer::pointer peer)
                      "list again",
                      mDirectionString, peer->toString());
         CLOG_WARNING(Overlay, "{}", REPORT_INTERNAL_BUG);
-        mConnectionsCancelled.Mark();
         return false;
     }
 
@@ -271,7 +257,6 @@ OverlayManagerImpl::PeersList::acceptAuthenticatedPeer(Peer::pointer peer)
                    authenticated.str());
     }
 
-    mConnectionsCancelled.Mark();
     return false;
 }
 
@@ -316,10 +301,10 @@ OverlayManagerImpl::OverlayManagerImpl(Application& app)
     , mFloodGate(app)
     , mTxDemandsManager(app)
     , mSurveyManager(make_shared<SurveyManager>(app))
-    , mInboundPeers(*this, mApp.getMetrics(), "inbound", "reject",
+    , mInboundPeers(*this, "inbound",
                     mApp.getConfig().MAX_ADDITIONAL_PEER_CONNECTIONS,
                     mSurveyManager)
-    , mOutboundPeers(*this, mApp.getMetrics(), "outbound", "cancel",
+    , mOutboundPeers(*this, "outbound",
                      mApp.getConfig().TARGET_PEER_CONNECTIONS, mSurveyManager)
     , mResolvingPeersWithBackoff(true)
     , mResolvingPeersRetryCount(0)
@@ -869,17 +854,12 @@ OverlayManagerImpl::clearLedgersBelow(uint32_t ledgerSeq, uint32_t lclSeq)
 void
 OverlayManagerImpl::updateSizeCounters()
 {
-    mOverlayMetrics.mPendingPeersSize.set_count(getPendingPeersCount());
-    mOverlayMetrics.mAuthenticatedPeersSize.set_count(
-        getAuthenticatedPeersCount());
 }
 
 void
 OverlayManagerImpl::maybeAddInboundConnection(Peer::pointer peer)
 {
     ZoneScoped;
-    mInboundPeers.mConnectionsAttempted.Mark();
-
     if (peer)
     {
         releaseAssert(peer->getRole() == Peer::REMOTE_CALLED_US);
@@ -887,7 +867,6 @@ OverlayManagerImpl::maybeAddInboundConnection(Peer::pointer peer)
 
         if (mShuttingDown || !haveSpace)
         {
-            mInboundPeers.mConnectionsCancelled.Mark();
             peer->drop("all pending inbound connections are taken",
                        Peer::DropDirection::WE_DROPPED_REMOTE);
             mInboundPeers.mDropped.insert(peer);
@@ -895,13 +874,8 @@ OverlayManagerImpl::maybeAddInboundConnection(Peer::pointer peer)
         }
         CLOG_DEBUG(Overlay, "New (inbound) connected peer {}",
                    peer->toString());
-        mInboundPeers.mConnectionsEstablished.Mark();
         mInboundPeers.mPending.push_back(peer);
         updateSizeCounters();
-    }
-    else
-    {
-        mInboundPeers.mConnectionsCancelled.Mark();
     }
 }
 
@@ -962,18 +936,15 @@ OverlayManagerImpl::addOutboundConnection(Peer::pointer peer)
 {
     ZoneScoped;
     releaseAssert(peer->getRole() == Peer::WE_CALLED_REMOTE);
-    mOutboundPeers.mConnectionsAttempted.Mark();
 
     if (!canAcceptOutboundPeer(peer->getAddress()))
     {
-        mOutboundPeers.mConnectionsCancelled.Mark();
         peer->drop("all outbound connections taken",
                    Peer::DropDirection::WE_DROPPED_REMOTE);
         mOutboundPeers.mDropped.insert(peer);
         return false;
     }
     CLOG_DEBUG(Overlay, "New (outbound) connected peer {}", peer->toString());
-    mOutboundPeers.mConnectionsEstablished.Mark();
     mOutboundPeers.mPending.push_back(peer);
     updateSizeCounters();
 
@@ -1227,7 +1198,6 @@ OverlayManagerImpl::recvTransaction(TransactionFrameBasePtr transaction,
         // add it to our current set
         // and make sure it is valid
         auto addResult = mApp.getHerder().recvTransaction(transaction, false);
-        bool pulledRelevantTx = false;
         if (!(addResult.code ==
                   TransactionQueue::AddResultCode::ADD_STATUS_PENDING ||
               addResult.code ==
@@ -1242,21 +1212,12 @@ OverlayManagerImpl::recvTransaction(TransactionFrameBasePtr transaction,
         {
             bool dup = addResult.code ==
                        TransactionQueue::AddResultCode::ADD_STATUS_DUPLICATE;
-            if (!dup)
-            {
-                pulledRelevantTx = true;
-            }
             CLOG_DEBUG(
                 Overlay,
                 "Peer::recvTransaction Received {} transaction {} from {}",
                 (dup ? "duplicate" : "unique"),
                 hexAbbrev(transaction->getFullHash()), peer->toString());
         }
-
-        auto const& om = getOverlayMetrics();
-        auto& meter =
-            pulledRelevantTx ? om.mPulledRelevantTxs : om.mPulledIrrelevantTxs;
-        meter.Mark();
     }
 }
 
@@ -1280,10 +1241,6 @@ OverlayManagerImpl::broadcastMessage(std::shared_ptr<StellarMessage const> msg,
 {
     ZoneScoped;
     auto res = mFloodGate.broadcast(msg, hash);
-    if (res)
-    {
-        mOverlayMetrics.mMessagesBroadcast.Mark();
-    }
     return res;
 }
 
@@ -1389,8 +1346,6 @@ OverlayManagerImpl::recordMessageMetric(StellarMessage const& stellarMsg,
     {
         if (flood)
         {
-            mOverlayMetrics.mDuplicateFloodBytesRecv.Mark(size);
-
             peerMetrics.mDuplicateFloodBytesRecv += size;
             ++peerMetrics.mDuplicateFloodMessageRecv;
 
@@ -1398,8 +1353,6 @@ OverlayManagerImpl::recordMessageMetric(StellarMessage const& stellarMsg,
         }
         else
         {
-            mOverlayMetrics.mDuplicateFetchBytesRecv.Mark(size);
-
             peerMetrics.mDuplicateFetchBytesRecv += size;
             ++peerMetrics.mDuplicateFetchMessageRecv;
 
@@ -1408,13 +1361,9 @@ OverlayManagerImpl::recordMessageMetric(StellarMessage const& stellarMsg,
     }
     else
     {
-        // NOTE: false is used here as a placeholder value, since no value is
-        // needed.
         mMessageCache.put(hash, false);
         if (flood)
         {
-            mOverlayMetrics.mUniqueFloodBytesRecv.Mark(size);
-
             peerMetrics.mUniqueFloodBytesRecv += size;
             ++peerMetrics.mUniqueFloodMessageRecv;
 
@@ -1422,8 +1371,6 @@ OverlayManagerImpl::recordMessageMetric(StellarMessage const& stellarMsg,
         }
         else
         {
-            mOverlayMetrics.mUniqueFetchBytesRecv.Mark(size);
-
             peerMetrics.mUniqueFetchBytesRecv += size;
             ++peerMetrics.mUniqueFetchMessageRecv;
 

@@ -194,10 +194,7 @@ PeerManager::removePeersWithManyFailures(size_t minNumFailures,
         }
         st.define_and_bind();
 
-        {
-            auto timer = db.getDeleteTimer("peer");
-            st.execute(true);
-        }
+        st.execute(true);
     }
     catch (soci_error& err)
     {
@@ -249,17 +246,14 @@ PeerManager::load(PeerBareAddress const& address)
         int port = address.getPort();
         st.exchange(use(port));
         st.define_and_bind();
-        {
-            auto timer = mApp.getDatabase().getSelectTimer("peer");
-            st.execute(true);
-            inDatabase = st.got_data();
+        st.execute(true);
+        inDatabase = st.got_data();
 
-            if (!inDatabase)
-            {
-                result.mNextAttempt =
-                    VirtualClock::systemPointToTm(mApp.getClock().system_now());
-                result.mType = static_cast<int>(PeerType::INBOUND);
-            }
+        if (!inDatabase)
+        {
+            result.mNextAttempt =
+                VirtualClock::systemPointToTm(mApp.getClock().system_now());
+            result.mType = static_cast<int>(PeerType::INBOUND);
         }
     }
     catch (soci_error& err)
@@ -307,14 +301,11 @@ PeerManager::store(PeerBareAddress const& address, PeerRecord const& peerRecord,
         int port = address.getPort();
         st.exchange(use(port));
         st.define_and_bind();
+        st.execute(true);
+        if (st.get_affected_rows() != 1)
         {
-            auto timer = mApp.getDatabase().getUpdateTimer("peer");
-            st.execute(true);
-            if (st.get_affected_rows() != 1)
-            {
-                CLOG_ERROR(Overlay, "PeerManager::store failed on {}",
-                           address.toString());
-            }
+            CLOG_ERROR(Overlay, "PeerManager::store failed on {}",
+                       address.toString());
         }
     }
     catch (soci_error& err)
@@ -557,10 +548,7 @@ PeerManager::loadPeers(size_t limit, size_t offset, std::string const& where,
         st.exchange(into(lport));
 
         st.define_and_bind();
-        {
-            auto timer = mApp.getDatabase().getSelectTimer("peer");
-            st.execute(true);
-        }
+        st.execute(true);
         while (st.got_data())
         {
             if (!ip.empty() && lport > 0)
@@ -610,10 +598,7 @@ PeerManager::loadAllPeers()
         st.exchange(into(record.mType));
 
         st.define_and_bind();
-        {
-            auto timer = mApp.getDatabase().getSelectTimer("peer");
-            st.execute(true);
-        }
+        st.execute(true);
         while (st.got_data())
         {
             PeerBareAddress pba{ip, static_cast<unsigned short>(port)};

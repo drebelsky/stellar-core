@@ -90,7 +90,7 @@ class ItemFetcher : private NonMovableOrCopyable
      * added before with @see fetch and the same @p itemHash will be resent
      * to Herder, matching @see Tracker will be cleaned up.
      */
-    void recv(Hash itemHash, medida::Timer& timer);
+    void recv(Hash itemHash);
 
 #ifdef BUILD_TESTS
     std::shared_ptr<Tracker> getTracker(Hash const& h);

@@ -44,11 +44,7 @@ LedgerTxnRoot::Impl::loadOffer(LedgerKey const& key) const
     st.exchange(soci::use(actIDStrKey));
     st.exchange(soci::use(offerID));
 
-    std::vector<LedgerEntry> offers;
-    {
-        auto timer = mApp.getDatabase().getSelectTimer("offer");
-        offers = loadOffers(prep);
-    }
+    std::vector<LedgerEntry> offers = loadOffers(prep);
 
     return offers.empty() ? nullptr
                           : std::make_shared<LedgerEntry const>(offers.front());
@@ -63,11 +59,7 @@ LedgerTxnRoot::Impl::loadAllOffers() const
                       "ledgerext FROM offers";
     auto prep = mApp.getDatabase().getPreparedStatement(sql, getSession());
 
-    std::vector<LedgerEntry> offers;
-    {
-        auto timer = mApp.getDatabase().getSelectTimer("offer");
-        offers = loadOffers(prep);
-    }
+    std::vector<LedgerEntry> offers = loadOffers(prep);
     return offers;
 }
 
@@ -95,10 +87,7 @@ LedgerTxnRoot::Impl::loadBestOffers(std::deque<LedgerEntry>& offers,
     st.exchange(soci::use(buyingAsset));
     st.exchange(soci::use(numOffers));
 
-    {
-        auto timer = mApp.getDatabase().getSelectTimer("offer");
-        return loadOffers(prep, offers);
-    }
+    return loadOffers(prep, offers);
 }
 
 std::deque<LedgerEntry>::const_iterator
@@ -158,10 +147,7 @@ LedgerTxnRoot::Impl::loadBestOffers(std::deque<LedgerEntry>& offers,
     st.exchange(soci::use(numOffers));
     st.exchange(soci::use(numOffers));
 
-    {
-        auto timer = mApp.getDatabase().getSelectTimer("offer");
-        return loadOffers(prep, offers);
-    }
+    return loadOffers(prep, offers);
 }
 
 bool
@@ -233,11 +219,7 @@ LedgerTxnRoot::Impl::loadOffersByAccountAndAsset(AccountID const& accountID,
     st.exchange(soci::use(assetStr));
     st.exchange(soci::use(assetStr));
 
-    std::vector<LedgerEntry> offers;
-    {
-        auto timer = mApp.getDatabase().getSelectTimer("offer");
-        offers = loadOffers(prep);
-    }
+    std::vector<LedgerEntry> offers = loadOffers(prep);
     return offers;
 }
 
@@ -459,10 +441,7 @@ class BulkUpsertOffersOperation : public DatabaseTypeSpecificOperation<void>
         st.exchange(soci::use(mExtensions));
         st.exchange(soci::use(mLedgerExtensions));
         st.define_and_bind();
-        {
-            auto timer = mDB.getUpsertTimer("offer");
-            st.execute(true);
-        }
+        st.execute(true);
         if (static_cast<size_t>(st.get_affected_rows()) != mOfferIDs.size())
         {
             throw std::runtime_error("Could not update data in SQL");
@@ -547,10 +526,7 @@ class BulkUpsertOffersOperation : public DatabaseTypeSpecificOperation<void>
         st.exchange(soci::use(strExtensions));
         st.exchange(soci::use(strLedgerExtensions));
         st.define_and_bind();
-        {
-            auto timer = mDB.getUpsertTimer("offer");
-            st.execute(true);
-        }
+        st.execute(true);
         if (static_cast<size_t>(st.get_affected_rows()) != mOfferIDs.size())
         {
             throw std::runtime_error("Could not update data in SQL");
@@ -591,10 +567,7 @@ class BulkDeleteOffersOperation : public DatabaseTypeSpecificOperation<void>
         soci::statement& st = prep.statement();
         st.exchange(soci::use(mOfferIDs));
         st.define_and_bind();
-        {
-            auto timer = mDB.getDeleteTimer("offer");
-            st.execute(true);
-        }
+        st.execute(true);
         if (static_cast<size_t>(st.get_affected_rows()) != mOfferIDs.size() &&
             mCons == LedgerTxnConsistency::EXACT)
         {
@@ -624,10 +597,7 @@ class BulkDeleteOffersOperation : public DatabaseTypeSpecificOperation<void>
         soci::statement& st = prep.statement();
         st.exchange(soci::use(strOfferIDs));
         st.define_and_bind();
-        {
-            auto timer = mDB.getDeleteTimer("offer");
-            st.execute(true);
-        }
+        st.execute(true);
         if (static_cast<size_t>(st.get_affected_rows()) != mOfferIDs.size() &&
             mCons == LedgerTxnConsistency::EXACT)
         {
@@ -734,10 +704,7 @@ class BulkLoadOffersOperation
         st.exchange(soci::into(extension));
         st.exchange(soci::into(ledgerExtension));
         st.define_and_bind();
-        {
-            auto timer = mDb.getSelectTimer("offer");
-            st.execute(true);
-        }
+        st.execute(true);
 
         std::vector<LedgerEntry> res;
         while (st.got_data())

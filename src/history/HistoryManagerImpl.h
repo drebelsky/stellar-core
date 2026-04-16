@@ -28,10 +28,8 @@ class HistoryManagerImpl : public HistoryManager
     std::unique_ptr<TmpDir> mWorkDir;
     std::shared_ptr<BasicWork> mPublishWork;
 
-    medida::Meter& mPublishSuccess;
     medida::Meter& mPublishFailure;
 
-    medida::Timer& mEnqueueToPublishTimer;
     UnorderedMap<uint32_t, std::chrono::steady_clock::time_point> mEnqueueTimes;
     CheckpointBuilder mCheckpointBuilder;
 

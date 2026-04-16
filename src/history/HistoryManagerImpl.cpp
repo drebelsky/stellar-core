@@ -131,12 +131,8 @@ HistoryManagerImpl::HistoryManagerImpl(Application& app)
     : mApp(app)
     , mWorkDir(nullptr)
     , mPublishWork(nullptr)
-    , mPublishSuccess(
-          app.getMetrics().NewMeter({"history", "publish", "success"}, "event"))
     , mPublishFailure(
           app.getMetrics().NewMeter({"history", "publish", "failure"}, "event"))
-    , mEnqueueToPublishTimer(
-          app.getMetrics().NewTimer({"history", "publish", "time"}))
     , mCheckpointBuilder(app)
 {
 }
@@ -595,11 +591,9 @@ HistoryManagerImpl::historyPublished(
                 Perf, "Published history for ledger {} in {} seconds",
                 ledgerSeq,
                 std::chrono::duration<double>(now - iter->second).count());
-            mEnqueueToPublishTimer.Update(now - iter->second);
             mEnqueueTimes.erase(iter);
         }
 
-        this->mPublishSuccess.Mark();
         deletePublishedFiles(ledgerSeq, mApp.getConfig());
     }
     else
@@ -687,7 +681,7 @@ HistoryManagerImpl::restoreCheckpoint(uint32_t lcl)
 uint64_t
 HistoryManagerImpl::getPublishSuccessCount() const
 {
-    return mPublishSuccess.count();
+    return 0;
 }
 
 uint64_t

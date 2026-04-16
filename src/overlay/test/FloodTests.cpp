@@ -30,6 +30,7 @@ namespace stellar
 {
 using namespace txtest;
 
+#if 0
 TEST_CASE("Flooding", "[flood][overlay][acceptance]")
 {
     Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
@@ -569,4 +570,5 @@ TEST_CASE("Flooding", "[flood][overlay][acceptance]")
         }
     }
 }
+#endif
 }

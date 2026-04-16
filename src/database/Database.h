@@ -5,7 +5,6 @@
 #pragma once
 
 #include "database/DatabaseTypeSpecificOperation.h"
-#include "medida/timer_context.h"
 #include "overlay/StellarXDR.h"
 #include "util/Decoder.h"
 #include "util/NonCopyable.h"
@@ -16,12 +15,6 @@
 #include <string>
 #include <unordered_map>
 #include <xdrpp/marshal.h>
-
-namespace medida
-{
-class Meter;
-class Counter;
-}
 
 namespace stellar
 {
@@ -122,7 +115,6 @@ class SessionWrapper : NonCopyable
 class Database : NonMovableOrCopyable
 {
     Application& mApp;
-    medida::Meter& mQueryMeter;
 
     // SQLite locks the entire database file during writes, which prevents
     // parallelism between ledger apply and consensus/mempool. To work around
@@ -166,15 +158,6 @@ class Database : NonMovableOrCopyable
     // is destroyed.
     StatementContext getPreparedStatement(std::string const& query,
                                           SessionWrapper& session);
-
-    // Return metric-gathering timers for various families of SQL operation.
-    // These timers automatically count the time they are alive for,
-    // so only acquire them immediately before executing an SQL statement.
-    medida::TimerContext getInsertTimer(std::string const& entityName);
-    medida::TimerContext getSelectTimer(std::string const& entityName);
-    medida::TimerContext getDeleteTimer(std::string const& entityName);
-    medida::TimerContext getUpdateTimer(std::string const& entityName);
-    medida::TimerContext getUpsertTimer(std::string const& entityName);
 
     // If possible (i.e. "on postgres") issue an SQL pragma that marks
     // the current transaction as read-only. The effects of this last

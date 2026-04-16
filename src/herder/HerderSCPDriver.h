@@ -186,38 +186,6 @@ class HerderSCPDriver : public SCPDriver
     PendingEnvelopes& mPendingEnvelopes;
     SCP mSCP;
 
-    struct SCPMetrics
-    {
-        medida::Meter& mEnvelopeSign;
-
-        medida::Meter& mValueValid;
-        medida::Meter& mValueInvalid;
-
-        // listeners
-        medida::Meter& mCombinedCandidates;
-
-        // Timers for nomination and ballot protocols
-        medida::Timer& mNominateToPrepare;
-        medida::Timer& mPrepareToExternalize;
-
-        // Timers tracking externalize messages
-        medida::Timer& mFirstToSelfExternalizeLag;
-        medida::Timer& mSelfToOthersExternalizeLag;
-
-        SCPMetrics(Application& app);
-    };
-
-    SCPMetrics mSCPMetrics;
-
-    // Nomination timeouts per ledger
-    medida::Histogram& mNominateTimeout;
-    // Prepare timeouts per ledger
-    medida::Histogram& mPrepareTimeout;
-    // Unique values referenced per ledger
-    medida::Histogram& mUniqueValues;
-
-    // Externalize lag tracking for nodes in qset
-    UnorderedMap<NodeID, medida::Timer> mQSetLag;
 
     struct SCPTiming
     {
@@ -271,7 +239,7 @@ class HerderSCPDriver : public SCPDriver
                               std::function<void()> cb);
 
     void recordLogTiming(VirtualClock::time_point start,
-                         VirtualClock::time_point end, medida::Timer& timer,
+                         VirtualClock::time_point end,
                          std::string const& logStr,
                          std::chrono::nanoseconds threshold,
                          uint64_t slotIndex);

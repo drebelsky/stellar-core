@@ -145,7 +145,7 @@ ItemFetcher::doesntHave(Hash const& itemHash, Peer::pointer peer)
 }
 
 void
-ItemFetcher::recv(Hash itemHash, medida::Timer& timer)
+ItemFetcher::recv(Hash itemHash)
 {
     ZoneScoped;
     auto const& iter = mTrackers.find(itemHash);
@@ -159,7 +159,6 @@ ItemFetcher::recv(Hash itemHash, medida::Timer& timer)
         CLOG_TRACE(Overlay, "Recv {} : {}", hexAbbrev(itemHash),
                    tracker->size());
 
-        timer.Update(tracker->getDuration());
         while (!tracker->empty())
         {
             mApp.getHerder().recvSCPEnvelope(tracker->pop());

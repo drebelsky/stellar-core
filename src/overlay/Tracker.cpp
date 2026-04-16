@@ -4,12 +4,10 @@
 
 #include "Tracker.h"
 
-#include "OverlayMetrics.h"
 #include "crypto/BLAKE2.h"
 #include "crypto/Hex.h"
 #include "herder/Herder.h"
 #include "main/Application.h"
-#include "medida/meter.h"
 #include "overlay/OverlayManager.h"
 #include "util/GlobalChecks.h"
 #include "util/Logging.h"
@@ -28,8 +26,6 @@ Tracker::Tracker(Application& app, Hash const& hash, AskPeer& askPeer)
     , mNumListRebuild(0)
     , mTimer(app)
     , mItemHash(hash)
-    , mTryNextPeer(
-          app.getOverlayManager().getOverlayMetrics().mItemFetcherNextPeer)
     , mFetchTime("fetch-" + hexAbbrev(hash), LogSlowExecution::Mode::MANUAL)
 {
     releaseAssert(mAskPeer);
@@ -102,7 +98,6 @@ Tracker::tryNextPeer()
 
     if (mLastAskedPeer)
     {
-        mTryNextPeer.Mark();
         mLastAskedPeer.reset();
     }
 

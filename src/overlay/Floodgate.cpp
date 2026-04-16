@@ -7,11 +7,9 @@
 #include "crypto/Hex.h"
 #include "herder/Herder.h"
 #include "main/Application.h"
-#include "medida/counter.h"
 #include "overlay/OverlayManager.h"
 #include "util/GlobalChecks.h"
 #include "util/Logging.h"
-#include "util/MetricsRegistry.h"
 #include <Tracy.hpp>
 #include <fmt/format.h>
 
@@ -26,12 +24,6 @@ Floodgate::FloodRecord::FloodRecord(uint32_t ledger, Peer::pointer peer)
 
 Floodgate::Floodgate(Application& app)
     : mApp(app)
-    , mFloodMapSize(
-          app.getMetrics().NewCounter({"overlay", "memory", "flood-known"}))
-    , mSendFromBroadcast(app.getMetrics().NewMeter(
-          {"overlay", "flood", "broadcast"}, "message"))
-    , mMessagesAdvertised(app.getMetrics().NewMeter(
-          {"overlay", "flood", "advertised"}, "message"))
     , mShuttingDown(false)
 {
 }
@@ -52,7 +44,6 @@ Floodgate::clearBelow(uint32_t maxLedger)
             ++it;
         }
     }
-    mFloodMapSize.set_count(mFloodMap.size());
 }
 
 bool
@@ -68,7 +59,6 @@ Floodgate::addRecord(Peer::pointer peer, Hash const& index)
     { // we have never seen this message
         mFloodMap[index] = std::make_shared<FloodRecord>(
             mApp.getHerder().trackingConsensusLedgerIndex(), peer);
-        mFloodMapSize.set_count(mFloodMap.size());
         TracyPlot("overlay.memory.flood-known",
                   static_cast<int64_t>(mFloodMap.size()));
         return true;
@@ -105,7 +95,6 @@ Floodgate::broadcast(std::shared_ptr<StellarMessage const> msg,
         fr = std::make_shared<FloodRecord>(
             mApp.getHerder().trackingConsensusLedgerIndex(), Peer::pointer());
         mFloodMap[index] = fr;
-        mFloodMapSize.set_count(mFloodMap.size());
     }
     else
     {
@@ -126,15 +115,10 @@ Floodgate::broadcast(std::shared_ptr<StellarMessage const> msg,
         {
             if (pullMode)
             {
-                if (peer.second->sendAdvert(hash.value()))
-                {
-                    mMessagesAdvertised.Mark();
-                }
+                peer.second->sendAdvert(hash.value());
             }
             else
             {
-                mSendFromBroadcast.Mark();
-
                 if (msg->type() == SCP_MESSAGE)
                 {
                     peer.second->sendMessage(msg, !broadcasted);

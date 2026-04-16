@@ -326,17 +326,6 @@ class HerderImpl : public Herder
 
     struct SCPMetrics
     {
-        medida::Meter& mLostSync;
-
-        medida::Meter& mEnvelopeEmit;
-        medida::Meter& mEnvelopeReceive;
-
-        // Counters for things reached-through the
-        // SCP maps: Slots and Nodes
-        medida::Counter& mCumulativeStatements;
-
-        // envelope signature verification
-        medida::Meter& mEnvelopeValidSig;
         medida::Meter& mEnvelopeInvalidSig;
 
         SCPMetrics(Application& app);

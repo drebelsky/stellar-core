@@ -25,7 +25,6 @@ class InvariantManagerImpl : public InvariantManager
     std::map<std::string, std::shared_ptr<Invariant>> mInvariants;
     std::vector<std::shared_ptr<Invariant>> mEnabled;
     medida::Counter& mInvariantFailureCount;
-    medida::Counter& mStateSnapshotInvariantSkipped;
     std::atomic<bool> mStateSnapshotInvariantRunning{false};
     std::atomic<bool> mShouldRunStateSnapshotInvariant{false};
     VirtualTimer mStateSnapshotTimer;

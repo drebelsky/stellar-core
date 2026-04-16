@@ -45,16 +45,9 @@ class OverlayManagerImpl : public OverlayManager
     struct PeersList
     {
         explicit PeersList(OverlayManagerImpl& overlayManager,
-                           MetricsRegistry& metricsRegistry,
                            std::string const& directionString,
-                           std::string const& cancelledName,
                            int maxAuthenticatedCount,
                            std::shared_ptr<SurveyManager> sm);
-
-        medida::Meter& mConnectionsAttempted;
-        medida::Meter& mConnectionsEstablished;
-        medida::Meter& mConnectionsDropped;
-        medida::Meter& mConnectionsCancelled;
 
         OverlayManagerImpl& mOverlayManager;
         std::string mDirectionString;

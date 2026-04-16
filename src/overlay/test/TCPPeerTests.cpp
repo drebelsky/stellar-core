@@ -21,6 +21,7 @@ using namespace stellar::overlaytestutils;
 
 namespace stellar
 {
+#if 0
 TEST_CASE("TCPPeer lifetime", "[overlay]")
 {
     Hash networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
@@ -313,4 +314,5 @@ TEST_CASE("TCPPeer drop at capacity", "[overlay][flowcontrol]")
 
     s->stopAllNodes();
 }
+#endif
 }

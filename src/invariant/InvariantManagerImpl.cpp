@@ -46,8 +46,6 @@ InvariantManagerImpl::InvariantManagerImpl(Application& app)
     , mIsStopping([&app]() { return app.isStopping(); })
     , mInvariantFailureCount(
           app.getMetrics().NewCounter({"ledger", "invariant", "failure"}))
-    , mStateSnapshotInvariantSkipped(app.getMetrics().NewCounter(
-          {"ledger", "invariant", "state-snapshot-skipped"}))
     , mStateSnapshotTimer(app)
 {
 }
@@ -390,7 +388,6 @@ InvariantManagerImpl::snapshotTimerFired()
             "Skipping state snapshot invariant trigger "
             "because a previous scan is still running. "
             "STATE_SNAPSHOT_INVARIANT_LEDGER_FREQUENCY may be too short");
-        mStateSnapshotInvariantSkipped.inc();
     }
     else
     {

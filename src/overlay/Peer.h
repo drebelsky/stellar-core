@@ -165,8 +165,7 @@ class Peer : public std::enable_shared_from_this<Peer>,
         VirtualClock::time_point mEnqueuedTime;
         VirtualClock::time_point mIssuedTime;
         VirtualClock::time_point mCompletedTime;
-        void recordWriteTiming(OverlayMetrics& metrics,
-                               PeerMetrics& peerMetrics);
+        void recordWriteTiming(PeerMetrics& peerMetrics);
         xdr::msg_ptr mMessage;
         std::shared_ptr<StellarMessage const> mMsgPtr;
     };

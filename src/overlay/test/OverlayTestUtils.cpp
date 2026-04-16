@@ -57,9 +57,7 @@ getUnknownDemandCount(std::shared_ptr<Application> app)
 uint64_t
 getSentDemandCount(std::shared_ptr<Application> app)
 {
-    return app->getOverlayManager()
-        .getOverlayMetrics()
-        .mSendFloodDemandMeter.count();
+    return 0;
 }
 
 bool

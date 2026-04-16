@@ -128,8 +128,6 @@ TxDemandsManager::demand()
     }
     auto const now = mApp.getClock().now();
 
-    auto& om = mApp.getOverlayManager().getOverlayMetrics();
-
     // We determine that demands are obsolete after maxRetention.
     auto maxRetention = MAX_DELAY_DEMAND * MAX_RETRY_COUNT * 2;
     while (!mPendingDemands.empty())
@@ -137,11 +135,6 @@ TxDemandsManager::demand()
         auto const& it = mDemandHistoryMap.find(mPendingDemands.front());
         if ((now - it->second.firstDemanded) >= maxRetention)
         {
-            if (!it->second.latencyRecorded)
-            {
-                // We never received the txn.
-                om.mAbandonedDemandMeter.Mark();
-            }
             mPendingDemands.pop();
             mDemandHistoryMap.erase(it);
         }
@@ -191,7 +184,6 @@ TxDemandsManager::demand()
                     }
                     else
                     {
-                        om.mDemandTimeouts.Mark();
                         ++(peer->getPeerMetrics().mDemandTimeouts);
                     }
                     mDemandHistoryMap[txHash].peers.emplace(peer->getPeerID(),
@@ -231,14 +223,12 @@ TxDemandsManager::recordTxPullLatency(Hash const& hash,
 {
     auto it = mDemandHistoryMap.find(hash);
     auto now = mApp.getClock().now();
-    auto& om = mApp.getOverlayManager().getOverlayMetrics();
     if (it != mDemandHistoryMap.end())
     {
         // Record end-to-end pull time
         if (!it->second.latencyRecorded)
         {
             auto delta = now - it->second.firstDemanded;
-            om.mTxPullLatency.Update(delta);
             it->second.latencyRecorded = true;
             CLOG_DEBUG(
                 Overlay,
@@ -254,7 +244,6 @@ TxDemandsManager::recordTxPullLatency(Hash const& hash,
         if (peerIt != it->second.peers.end())
         {
             auto delta = now - peerIt->second;
-            om.mPeerTxPullLatency.Update(delta);
             peer->getPeerMetrics().mPullLatency.Update(delta);
             CLOG_DEBUG(
                 Overlay,
@@ -272,7 +261,6 @@ TxDemandsManager::recvTxDemand(FloodDemand const& dmd, Peer::pointer peer)
 {
     ZoneScoped;
     auto& herder = mApp.getHerder();
-    auto& om = mApp.getOverlayManager().getOverlayMetrics();
 #ifdef BUILD_TESTS
     auto msg = std::make_shared<StellarMessage>();
     size_t batchSize = 0;
@@ -284,7 +272,6 @@ TxDemandsManager::recvTxDemand(FloodDemand const& dmd, Peer::pointer peer)
     auto sendAndReset = [&]() {
         if (batchSize > 0)
         {
-            om.mTxBatchSizeHistogram.Update(batchSize);
             peer->sendMessage(std::move(msg));
             msg = OverlayManager::createTxBatch();
             batchSize = 0;
@@ -302,7 +289,6 @@ TxDemandsManager::recvTxDemand(FloodDemand const& dmd, Peer::pointer peer)
                        hexAbbrev(h),
                        KeyUtils::toShortString(peer->getPeerID()));
             peer->getPeerMetrics().mMessagesFulfilled++;
-            om.mMessagesFulfilledMeter.Mark();
 
 #ifdef BUILD_TESTS
             if (mApp.getConfig().EXPERIMENTAL_TX_BATCH_MAX_SIZE > 0)
@@ -353,12 +339,10 @@ TxDemandsManager::recvTxDemand(FloodDemand const& dmd, Peer::pointer peer)
                        KeyUtils::toShortString(peer->getPeerID()));
             if (banned)
             {
-                om.mBannedMessageUnfulfilledMeter.Mark();
                 peer->getPeerMetrics().mBannedMessageUnfulfilled++;
             }
             else
             {
-                om.mUnknownMessageUnfulfilledMeter.Mark();
                 peer->getPeerMetrics().mUnknownMessageUnfulfilled++;
             }
         }

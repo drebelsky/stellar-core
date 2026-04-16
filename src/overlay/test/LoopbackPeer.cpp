@@ -367,8 +367,6 @@ LoopbackPeer::deliverOne()
                 "LoopbackPeer: processInQueue in deliverOne");
         }
         mLastWrite = mAppConnector.now();
-        mOverlayMetrics.mMessageWrite.Mark();
-        mOverlayMetrics.mByteWrite.Mark(nBytes);
         ++mPeerMetrics.mMessageWrite;
         mPeerMetrics.mByteWrite += nBytes;
     }

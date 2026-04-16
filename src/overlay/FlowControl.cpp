@@ -76,11 +76,6 @@ FlowControl::maybeReleaseCapacity(StellarMessage const& msg)
 
     if (msg.type() == SEND_MORE_EXTENDED)
     {
-        if (mNoOutboundCapacity)
-        {
-            mOverlayMetrics.mConnectionFloodThrottle.Update(
-                mAppConnector.now() - *mNoOutboundCapacity);
-        }
         mNoOutboundCapacity.reset();
 
         mFlowControlCapacity.releaseOutboundCapacity(msg);
@@ -223,12 +218,6 @@ FlowControl::updateMsgMetrics(std::shared_ptr<StellarMessage const> msg,
     MutexLocker guard(mFlowControlMutex);
     auto diff = mAppConnector.now() - timePlaced;
 
-    auto updateQueueDelay = [&](auto& queue, auto& metrics) {
-        queue.Update(diff);
-        metrics.Update(diff);
-    };
-
-    auto& om = mAppConnector.getOverlayMetrics();
     switch (msg->type())
     {
     case TRANSACTION:
@@ -236,20 +225,16 @@ FlowControl::updateMsgMetrics(std::shared_ptr<StellarMessage const> msg,
     case TX_SET:
 #endif
         releaseAssert(OverlayManager::isFloodMessage(*msg));
-        updateQueueDelay(om.mOutboundQueueDelayTxs,
-                         mMetrics.mOutboundQueueDelayTxs);
+        mMetrics.mOutboundQueueDelayTxs.Update(diff);
         break;
     case SCP_MESSAGE:
-        updateQueueDelay(om.mOutboundQueueDelaySCP,
-                         mMetrics.mOutboundQueueDelaySCP);
+        mMetrics.mOutboundQueueDelaySCP.Update(diff);
         break;
     case FLOOD_DEMAND:
-        updateQueueDelay(om.mOutboundQueueDelayDemand,
-                         mMetrics.mOutboundQueueDelayDemand);
+        mMetrics.mOutboundQueueDelayDemand.Update(diff);
         break;
     case FLOOD_ADVERT:
-        updateQueueDelay(om.mOutboundQueueDelayAdvert,
-                         mMetrics.mOutboundQueueDelayAdvert);
+        mMetrics.mOutboundQueueDelayAdvert.Update(diff);
         break;
     default:
     {
@@ -477,7 +462,6 @@ FlowControl::addMsgAndMaybeTrimQueue(std::shared_ptr<StellarMessage const> msg)
 
     uint32_t const limit =
         mAppConnector.getLedgerManager().getLastMaxTxSetSizeOps();
-    auto& om = mOverlayMetrics;
     if (type == TRANSACTION)
     {
         bool isOverLimit = queue.size() > limit ||
@@ -490,7 +474,6 @@ FlowControl::addMsgAndMaybeTrimQueue(std::shared_ptr<StellarMessage const> msg)
             dropped = queue.size();
             mTxQueueByteCount = 0;
             queue.clear();
-            om.mOutboundQueueDropTxs.Mark(dropped);
         }
     }
     // When at limit, do not drop SCP messages, critical to consensus
@@ -539,7 +522,6 @@ FlowControl::addMsgAndMaybeTrimQueue(std::shared_ptr<StellarMessage const> msg)
                 ++it;
             }
         }
-        om.mOutboundQueueDropSCP.Mark(dropped);
     }
     else if (type == FLOOD_ADVERT)
     {
@@ -548,7 +530,6 @@ FlowControl::addMsgAndMaybeTrimQueue(std::shared_ptr<StellarMessage const> msg)
             dropped = mAdvertQueueTxHashCount;
             mAdvertQueueTxHashCount = 0;
             queue.clear();
-            om.mOutboundQueueDropAdvert.Mark(dropped);
         }
     }
     else if (type == FLOOD_DEMAND)
@@ -558,7 +539,6 @@ FlowControl::addMsgAndMaybeTrimQueue(std::shared_ptr<StellarMessage const> msg)
             dropped = mDemandQueueTxHashCount;
             mDemandQueueTxHashCount = 0;
             queue.clear();
-            om.mOutboundQueueDropDemand.Mark(dropped);
         }
     }
 
@@ -634,8 +614,6 @@ FlowControl::stopThrottling()
     releaseAssert(mLastThrottle);
     CLOG_DEBUG(Overlay, "Stop throttling reading from peer {}",
                mAppConnector.getConfig().toShortString(mNodeID));
-    mOverlayMetrics.mConnectionReadThrottle.Update(mAppConnector.now() -
-                                                   *mLastThrottle);
     mLastThrottle.reset();
 }
 
