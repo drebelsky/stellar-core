@@ -75,6 +75,14 @@ enum class IPCMessageType : uint32_t
     /// Response: OVERLAY_METRICS_RESPONSE with JSON payload
     REQUEST_OVERLAY_METRICS = 13,
 
+    /// Broadcast a StellarMessage to all directly connected peers (no relay).
+    /// Payload: [StellarMessage XDR]
+    BROADCAST_DIRECT = 14,
+
+    /// Send a StellarMessage to exactly one peer.
+    /// Payload: [peerId:8][StellarMessage XDR]
+    SEND_TO_PEER = 15,
+
     // ═══ Overlay → Core (Critical Path) ═══
 
     /// Received SCP envelope from network
@@ -99,6 +107,20 @@ enum class IPCMessageType : uint32_t
     /// Overlay metrics snapshot (JSON payload)
     /// Response to REQUEST_OVERLAY_METRICS
     OVERLAY_METRICS_RESPONSE = 105,
+
+    /// Compact tx set received from peer with auto-resolved short IDs.
+    /// Payload: [peerId:8][rawLen:4][CompactTransactionSet raw
+    /// bytes][count:4][resolution entries...]
+    COMPACT_TX_SET_RECEIVED = 106,
+
+    /// Refill request received from peer.
+    /// Payload: [peerId:8][GetCompactTxSetTransactions raw bytes]
+    GET_COMPACT_TX_SET_TXS_RECEIVED = 107,
+
+    /// Refill response forwarded from peer (header parsed, envelopes opaque).
+    /// Payload:
+    /// [txSetHash:32][nonce:8][peerId:8][shortIdsLen:4][packedShortIds][envelopeArrayLen:4][envelopeArrayBytes]
+    REFILL_FORWARDED = 108,
 };
 
 /**

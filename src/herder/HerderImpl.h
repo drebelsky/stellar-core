@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "herder/CompactTxSet.h"
 #include "herder/Herder.h"
 #include "herder/HerderSCPDriver.h"
 #include "herder/LedgerCloseData.h"
@@ -14,8 +15,10 @@
 #include "util/Timer.h"
 #include "util/UnorderedMap.h"
 #include "util/XDROperators.h"
+#include <chrono>
 #include <deque>
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace medida
@@ -224,6 +227,20 @@ class HerderImpl : public Herder
 
     void maybeHandleUpgrade() override;
 
+    // --- Compact tx set receive-side handlers (called from IPC callbacks) ---
+
+    void onCompactTxSetReceived(
+        uint64_t senderId, std::vector<uint8_t> const& rawBytes,
+        std::vector<ResolveResultEntry> const& resolved);
+
+    void onGetCompactTxSetTxsReceived(uint64_t senderId,
+                                      std::vector<uint8_t> const& rawBytes);
+
+    void onRefillForwarded(Hash const& txSetHash, uint64_t nonce,
+                           uint64_t senderId,
+                           std::vector<uint8_t> const& packedShortIds,
+                           std::vector<uint8_t> const& envelopeArrayBytes);
+
   private:
     // return true if values referenced by envelope have a valid close time:
     // * it's within the allowed range (using lcl if possible)
@@ -241,6 +258,15 @@ class HerderImpl : public Herder
     void startOutOfSyncTimer();
     void outOfSyncRecovery();
     void broadcast(SCPEnvelope const& e);
+
+    // Compact tx set relay: attempt to send a compact tx set alongside
+    // an SCP envelope, subject to config flags and per-peer dedup.
+    void maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e);
+
+    // Try to reconstruct a compact session and deliver to PendingEnvelopes
+    // if complete, or request refill / fallback as needed.
+    void tryFinishCompactSession(Hash const& txSetHash, uint64_t nonce,
+                                 uint64_t senderId);
 
     void processSCPQueueUpToIndex(uint64 slotIndex);
     void safelyProcessSCPQueue(bool synchronous);
@@ -335,6 +361,69 @@ class HerderImpl : public Herder
 
     State mState;
     void setState(State st);
+
+    // --- Compact tx set relay state (sender side) ---
+
+    // Cached serialized CompactTransactionSet, keyed by txSetHash.
+    // Built once per (txSetHash, nonce) and reused for all sends.
+    struct CachedCompactTxSet
+    {
+        uint64_t nonce;
+        std::vector<uint8_t> serializedBytes;
+    };
+    std::map<Hash, CachedCompactTxSet> mCachedCompactTxSets;
+
+    // Per-peer dedup: (txSetHash, peerId) pairs we have already emitted
+    // a compact tx set for. Prevents redundant sends across different
+    // SCP phases / relay paths.
+    // Note: peerId == 0 means "broadcast to all"; we don't track per-peer
+    // in broadcast mode, only skip duplicate broadcasts for the same hash.
+    std::set<Hash> mCompactTxSetBroadcastDedup;
+
+    // --- Compact tx set reconstruction state (receiver side) ---
+
+    // Key for a compact reconstruction session.
+    struct CompactSessionKey
+    {
+        Hash txSetHash;
+        uint64_t nonce;
+        uint64_t senderId;
+
+        bool
+        operator<(CompactSessionKey const& o) const
+        {
+            if (txSetHash < o.txSetHash)
+                return true;
+            if (o.txSetHash < txSetHash)
+                return false;
+            if (nonce < o.nonce)
+                return true;
+            if (o.nonce < nonce)
+                return false;
+            return senderId < o.senderId;
+        }
+    };
+
+    // State for a single compact reconstruction session.
+    struct CompactSession
+    {
+        CompactTransactionSet compact;
+        ResolvedShortIdMap resolved;
+        // Total tx count across all phases for short-circuit computation
+        size_t totalTxCount{0};
+        // Timestamp of when we first received this compact message
+        VirtualClock::time_point receivedAt;
+        // Whether we have sent a refill request
+        bool refillRequested{false};
+    };
+
+    std::map<CompactSessionKey, CompactSession> mCompactSessions;
+
+    // Set of txSetHashes that have been fully reconstructed (or obtained
+    // via full GET_TX_SET). Used to detect redundant compact arrivals.
+    std::set<Hash> mReconstructedTxSetHashes;
+
+    // --- End compact tx set state ---
 
     // Information about the most recent tracked SCP slot
     // Set regardless of whether the local instance if fully in sync with the

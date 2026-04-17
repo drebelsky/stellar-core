@@ -533,6 +533,12 @@ class Config : public std::enable_shared_from_this<Config>
     // Enable parallel block application (experimental)
     bool PARALLEL_LEDGER_APPLY;
 
+    // Compact tx set relay (BIP 0152-style) config flags
+    bool COMPACT_TX_SET_LEADER_NOMINATION;
+    bool COMPACT_TX_SET_NON_LEADER_NOMINATION;
+    bool COMPACT_TX_SET_BALLOT_ROUNDS;
+    double COMPACT_TX_SET_REFILL_MAX_RATIO;
+
     // Disable expensive Soroban metrics for performance testing
     bool DISABLE_SOROBAN_METRICS_FOR_TESTING;
 

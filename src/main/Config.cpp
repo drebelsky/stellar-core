@@ -175,6 +175,10 @@ Config::Config() : NODE_SEED(SecretKey::random())
     CATCHUP_RECENT = 0;
     BACKGROUND_OVERLAY_PROCESSING = true;
     PARALLEL_LEDGER_APPLY = true;
+    COMPACT_TX_SET_LEADER_NOMINATION = true;
+    COMPACT_TX_SET_NON_LEADER_NOMINATION = false;
+    COMPACT_TX_SET_BALLOT_ROUNDS = false;
+    COMPACT_TX_SET_REFILL_MAX_RATIO = 0.5;
     DISABLE_SOROBAN_METRICS_FOR_TESTING = false;
     BACKGROUND_TX_SIG_VERIFICATION = true;
     BUCKETLIST_DB_INDEX_PAGE_SIZE_EXPONENT = 14; // 2^14 == 16 kb
@@ -1140,6 +1144,27 @@ Config::processConfig(std::shared_ptr<cpptoml::table> t)
                  }},
                 {"PARALLEL_LEDGER_APPLY",
                  [&]() { PARALLEL_LEDGER_APPLY = readBool(item); }},
+                {"COMPACT_TX_SET_LEADER_NOMINATION",
+                 [&]() {
+                     COMPACT_TX_SET_LEADER_NOMINATION = readBool(item);
+                 }},
+                {"COMPACT_TX_SET_NON_LEADER_NOMINATION",
+                 [&]() {
+                     COMPACT_TX_SET_NON_LEADER_NOMINATION = readBool(item);
+                 }},
+                {"COMPACT_TX_SET_BALLOT_ROUNDS",
+                 [&]() { COMPACT_TX_SET_BALLOT_ROUNDS = readBool(item); }},
+                {"COMPACT_TX_SET_REFILL_MAX_RATIO",
+                 [&]() {
+                     COMPACT_TX_SET_REFILL_MAX_RATIO = readDouble(item);
+                     if (COMPACT_TX_SET_REFILL_MAX_RATIO <= 0.0 ||
+                         COMPACT_TX_SET_REFILL_MAX_RATIO > 1.0)
+                     {
+                         throw std::invalid_argument(
+                             "COMPACT_TX_SET_REFILL_MAX_RATIO must be in "
+                             "(0.0, 1.0]");
+                     }
+                 }},
                 {"DISABLE_SOROBAN_METRICS_FOR_TESTING",
                  [&]() {
                      DISABLE_SOROBAN_METRICS_FOR_TESTING = readBool(item);

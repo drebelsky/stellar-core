@@ -45,6 +45,28 @@ class OverlayIPC
     using TxSetReceivedCallback = std::function<void(
         Hash const& hash, GeneralizedTransactionSet const& txSet)>;
 
+    /// Callback when compact tx set received and auto-resolved by Rust.
+    /// Parameters: (sender peerId, raw CompactTransactionSet bytes,
+    ///              per-short-ID resolution entries)
+    struct CompactResolveEntry
+    {
+        uint8_t status; // 0=UNIQUE, 1=MISSING, 2=AMBIGUOUS
+        std::vector<uint8_t> envelopeBytes; // non-empty only if UNIQUE
+    };
+    using CompactTxSetReceivedCallback = std::function<void(
+        uint64_t senderId, std::vector<uint8_t> const& rawBytes,
+        std::vector<CompactResolveEntry> const& resolved)>;
+
+    /// Callback when refill request received from a peer.
+    using GetCompactTxSetTxsReceivedCallback = std::function<void(
+        uint64_t senderId, std::vector<uint8_t> const& rawBytes)>;
+
+    /// Callback when refill response forwarded from Rust.
+    using RefillForwardedCallback = std::function<void(
+        Hash const& txSetHash, uint64_t nonce, uint64_t senderId,
+        std::vector<uint8_t> const& packedShortIds,
+        std::vector<uint8_t> const& envelopeArrayBytes)>;
+
     /**
      * Create an OverlayIPC instance.
      *
@@ -161,6 +183,29 @@ class OverlayIPC
      */
     void cacheTxSet(Hash const& hash, std::vector<uint8_t> const& xdr);
 
+    /**
+     * Broadcast a StellarMessage to all directly connected peers.
+     * Recipients do NOT relay the message further.
+     *
+     * Used for COMPACT_TX_SET emission alongside SCP envelopes.
+     *
+     * @param msg The StellarMessage to broadcast
+     * @return true if sent successfully
+     */
+    bool broadcastDirect(StellarMessage const& msg);
+
+    /**
+     * Send a StellarMessage to exactly one peer.
+     *
+     * Used for GET_COMPACT_TX_SET_TXS (refill request) and
+     * COMPACT_TX_SET_TXS (refill response).
+     *
+     * @param peerId Peer identifier (from Rust overlay)
+     * @param msg The StellarMessage to send
+     * @return true if sent successfully
+     */
+    bool sendToPeer(uint64_t peerId, StellarMessage const& msg);
+
     /// Set callback for received SCP envelopes
     void setOnSCPReceived(SCPReceivedCallback cb);
 
@@ -169,6 +214,15 @@ class OverlayIPC
 
     /// Set callback for TX set received from peers (async fetch)
     void setOnTxSetReceived(TxSetReceivedCallback cb);
+
+    /// Set callback for compact tx set received (auto-resolved by Rust)
+    void setOnCompactTxSetReceived(CompactTxSetReceivedCallback cb);
+
+    /// Set callback for refill request received from peer
+    void setOnGetCompactTxSetTxsReceived(GetCompactTxSetTxsReceivedCallback cb);
+
+    /// Set callback for refill response forwarded from Rust
+    void setOnRefillForwarded(RefillForwardedCallback cb);
 
     /**
      * Request overlay metrics snapshot from Rust overlay.
@@ -218,6 +272,9 @@ class OverlayIPC
     SCPReceivedCallback mOnSCPReceived;
     ScpStateRequestCallback mOnScpStateRequest;
     TxSetReceivedCallback mOnTxSetReceived;
+    CompactTxSetReceivedCallback mOnCompactTxSetReceived;
+    GetCompactTxSetTxsReceivedCallback mOnGetCompactTxSetTxsReceived;
+    RefillForwardedCallback mOnRefillForwarded;
 
     // For synchronous request/response (getTopTransactions)
     std::mutex mRequestMutex;

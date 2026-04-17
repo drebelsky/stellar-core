@@ -3,7 +3,9 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "overlay/RustOverlayManager.h"
+#include "herder/CompactTxSet.h"
 #include "herder/Herder.h"
+#include "herder/HerderImpl.h"
 #include "herder/TxSetFrame.h"
 #include "lib/json/json.h"
 #include "main/Application.h"
@@ -83,6 +85,70 @@ RustOverlayManager::start()
                     mApp.getHerder().recvTxSet(hash, frame);
                 },
                 "RustOverlayManager: TxSetReceived");
+        });
+
+    // Compact tx set callbacks
+    mOverlayIPC->setOnCompactTxSetReceived(
+        [this](uint64_t senderId, std::vector<uint8_t> const& rawBytes,
+               std::vector<OverlayIPC::CompactResolveEntry> const&
+                   resolveEntries) {
+            // Convert to ResolveResultEntry for HerderImpl
+            auto resolved =
+                std::make_shared<std::vector<ResolveResultEntry>>();
+            resolved->reserve(resolveEntries.size());
+            for (auto const& e : resolveEntries)
+            {
+                ResolveResultEntry entry;
+                entry.status =
+                    static_cast<ResolveResultEntry::Status>(e.status);
+                entry.envelopeBytes.assign(e.envelopeBytes.begin(),
+                                           e.envelopeBytes.end());
+                resolved->push_back(std::move(entry));
+            }
+            auto rawCopy =
+                std::make_shared<std::vector<uint8_t>>(rawBytes);
+            mApp.postOnMainThread(
+                [this, senderId, rawCopy, resolved]() {
+                    auto& herder =
+                        static_cast<HerderImpl&>(mApp.getHerder());
+                    herder.onCompactTxSetReceived(senderId, *rawCopy,
+                                                  *resolved);
+                },
+                "RustOverlayManager: CompactTxSetReceived");
+        });
+
+    mOverlayIPC->setOnGetCompactTxSetTxsReceived(
+        [this](uint64_t senderId, std::vector<uint8_t> const& rawBytes) {
+            auto rawCopy =
+                std::make_shared<std::vector<uint8_t>>(rawBytes);
+            mApp.postOnMainThread(
+                [this, senderId, rawCopy]() {
+                    auto& herder =
+                        static_cast<HerderImpl&>(mApp.getHerder());
+                    herder.onGetCompactTxSetTxsReceived(senderId,
+                                                        *rawCopy);
+                },
+                "RustOverlayManager: GetCompactTxSetTxsReceived");
+        });
+
+    mOverlayIPC->setOnRefillForwarded(
+        [this](Hash const& txSetHash, uint64_t nonce, uint64_t senderId,
+               std::vector<uint8_t> const& packedShortIds,
+               std::vector<uint8_t> const& envelopeArrayBytes) {
+            auto hashCopy = txSetHash;
+            auto shortIdsCopy =
+                std::make_shared<std::vector<uint8_t>>(packedShortIds);
+            auto envCopy = std::make_shared<std::vector<uint8_t>>(
+                envelopeArrayBytes);
+            mApp.postOnMainThread(
+                [this, hashCopy, nonce, senderId, shortIdsCopy,
+                 envCopy]() {
+                    auto& herder =
+                        static_cast<HerderImpl&>(mApp.getHerder());
+                    herder.onRefillForwarded(hashCopy, nonce, senderId,
+                                             *shortIdsCopy, *envCopy);
+                },
+                "RustOverlayManager: RefillForwarded");
         });
 
     if (!mOverlayIPC->start())
@@ -205,6 +271,26 @@ RustOverlayManager::getTopTransactions(size_t count, int timeoutMs)
         return mOverlayIPC->getTopTransactions(count, timeoutMs);
     }
     return {};
+}
+
+bool
+RustOverlayManager::broadcastDirect(StellarMessage const& msg)
+{
+    if (mOverlayIPC && !mShuttingDown)
+    {
+        return mOverlayIPC->broadcastDirect(msg);
+    }
+    return false;
+}
+
+bool
+RustOverlayManager::sendToPeer(uint64_t peerId, StellarMessage const& msg)
+{
+    if (mOverlayIPC && !mShuttingDown)
+    {
+        return mOverlayIPC->sendToPeer(peerId, msg);
+    }
+    return false;
 }
 
 OverlayMetrics&

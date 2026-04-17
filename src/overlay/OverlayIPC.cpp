@@ -295,6 +295,143 @@ OverlayIPC::handleMessage(IPCMessage const& msg)
         break;
     }
 
+    case IPCMessageType::COMPACT_TX_SET_RECEIVED:
+    {
+        // Payload: [peerId:8][rawLen:4][raw bytes][count:4][entries...]
+        // Each entry: [status:1][envLen:4][envBytes...]
+        if (mOnCompactTxSetReceived && msg.payload.size() >= 16)
+        {
+            size_t offset = 0;
+            uint64_t senderId;
+            std::memcpy(&senderId, msg.payload.data() + offset, 8);
+            offset += 8;
+
+            uint32_t rawLen;
+            std::memcpy(&rawLen, msg.payload.data() + offset, 4);
+            offset += 4;
+
+            if (offset + rawLen + 4 > msg.payload.size())
+            {
+                CLOG_WARNING(Overlay,
+                             "COMPACT_TX_SET_RECEIVED payload too short");
+                break;
+            }
+            std::vector<uint8_t> rawBytes(
+                msg.payload.begin() + offset,
+                msg.payload.begin() + offset + rawLen);
+            offset += rawLen;
+
+            uint32_t count;
+            std::memcpy(&count, msg.payload.data() + offset, 4);
+            offset += 4;
+
+            std::vector<CompactResolveEntry> resolved;
+            resolved.reserve(count);
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                if (offset + 5 > msg.payload.size())
+                {
+                    CLOG_WARNING(
+                        Overlay,
+                        "COMPACT_TX_SET_RECEIVED entries truncated");
+                    break;
+                }
+                CompactResolveEntry entry;
+                entry.status = msg.payload[offset];
+                offset += 1;
+                uint32_t envLen;
+                std::memcpy(&envLen, msg.payload.data() + offset, 4);
+                offset += 4;
+                if (envLen > 0)
+                {
+                    if (offset + envLen > msg.payload.size())
+                    {
+                        CLOG_WARNING(
+                            Overlay,
+                            "COMPACT_TX_SET_RECEIVED envelope truncated");
+                        break;
+                    }
+                    entry.envelopeBytes.assign(
+                        msg.payload.begin() + offset,
+                        msg.payload.begin() + offset + envLen);
+                    offset += envLen;
+                }
+                resolved.push_back(std::move(entry));
+            }
+
+            mOnCompactTxSetReceived(senderId, rawBytes, resolved);
+        }
+        break;
+    }
+
+    case IPCMessageType::GET_COMPACT_TX_SET_TXS_RECEIVED:
+    {
+        // Payload: [peerId:8][raw GetCompactTxSetTransactions bytes]
+        if (mOnGetCompactTxSetTxsReceived && msg.payload.size() > 8)
+        {
+            uint64_t senderId;
+            std::memcpy(&senderId, msg.payload.data(), 8);
+            std::vector<uint8_t> rawBytes(msg.payload.begin() + 8,
+                                          msg.payload.end());
+            mOnGetCompactTxSetTxsReceived(senderId, rawBytes);
+        }
+        break;
+    }
+
+    case IPCMessageType::REFILL_FORWARDED:
+    {
+        // Payload:
+        // [txSetHash:32][nonce:8][peerId:8][shortIdsLen:4][shortIds][envelopeArrayLen:4][envelopeBytes]
+        if (mOnRefillForwarded && msg.payload.size() >= 56)
+        {
+            size_t offset = 0;
+            Hash txSetHash;
+            std::memcpy(txSetHash.data(), msg.payload.data() + offset, 32);
+            offset += 32;
+
+            uint64_t nonce;
+            std::memcpy(&nonce, msg.payload.data() + offset, 8);
+            offset += 8;
+
+            uint64_t senderId;
+            std::memcpy(&senderId, msg.payload.data() + offset, 8);
+            offset += 8;
+
+            uint32_t shortIdsLen;
+            std::memcpy(&shortIdsLen, msg.payload.data() + offset, 4);
+            offset += 4;
+
+            if (offset + shortIdsLen + 4 > msg.payload.size())
+            {
+                CLOG_WARNING(Overlay,
+                             "REFILL_FORWARDED payload too short");
+                break;
+            }
+            std::vector<uint8_t> packedShortIds(
+                msg.payload.begin() + offset,
+                msg.payload.begin() + offset + shortIdsLen);
+            offset += shortIdsLen;
+
+            uint32_t envArrayLen;
+            std::memcpy(&envArrayLen, msg.payload.data() + offset, 4);
+            offset += 4;
+
+            if (offset + envArrayLen > msg.payload.size())
+            {
+                CLOG_WARNING(Overlay,
+                             "REFILL_FORWARDED envelope array truncated");
+                break;
+            }
+            std::vector<uint8_t> envelopeArrayBytes(
+                msg.payload.begin() + offset,
+                msg.payload.begin() + offset + envArrayLen);
+
+            mOnRefillForwarded(txSetHash, nonce, senderId, packedShortIds,
+                               envelopeArrayBytes);
+        }
+        break;
+    }
+
     default:
         CLOG_DEBUG(Overlay, "Unhandled IPC message type: {}",
                    static_cast<uint32_t>(msg.type));
@@ -601,6 +738,65 @@ void
 OverlayIPC::setOnTxSetReceived(TxSetReceivedCallback cb)
 {
     mOnTxSetReceived = std::move(cb);
+}
+
+void
+OverlayIPC::setOnCompactTxSetReceived(CompactTxSetReceivedCallback cb)
+{
+    mOnCompactTxSetReceived = std::move(cb);
+}
+
+void
+OverlayIPC::setOnGetCompactTxSetTxsReceived(
+    GetCompactTxSetTxsReceivedCallback cb)
+{
+    mOnGetCompactTxSetTxsReceived = std::move(cb);
+}
+
+void
+OverlayIPC::setOnRefillForwarded(RefillForwardedCallback cb)
+{
+    mOnRefillForwarded = std::move(cb);
+}
+
+bool
+OverlayIPC::broadcastDirect(StellarMessage const& msg)
+{
+    if (!mChannel || !mChannel->isConnected())
+    {
+        CLOG_WARNING(Overlay,
+                     "Cannot broadcastDirect: not connected to overlay");
+        return false;
+    }
+
+    IPCMessage ipcMsg;
+    ipcMsg.type = IPCMessageType::BROADCAST_DIRECT;
+    ipcMsg.payload = xdr::xdr_to_opaque(msg);
+
+    std::lock_guard<std::mutex> lock(mSendMutex);
+    return mChannel->send(ipcMsg);
+}
+
+bool
+OverlayIPC::sendToPeer(uint64_t peerId, StellarMessage const& msg)
+{
+    if (!mChannel || !mChannel->isConnected())
+    {
+        CLOG_WARNING(Overlay,
+                     "Cannot sendToPeer: not connected to overlay");
+        return false;
+    }
+
+    auto xdrBytes = xdr::xdr_to_opaque(msg);
+
+    IPCMessage ipcMsg;
+    ipcMsg.type = IPCMessageType::SEND_TO_PEER;
+    ipcMsg.payload.resize(8 + xdrBytes.size());
+    std::memcpy(ipcMsg.payload.data(), &peerId, 8);
+    std::memcpy(ipcMsg.payload.data() + 8, xdrBytes.data(), xdrBytes.size());
+
+    std::lock_guard<std::mutex> lock(mSendMutex);
+    return mChannel->send(ipcMsg);
 }
 
 void

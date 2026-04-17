@@ -60,6 +60,12 @@ class RustOverlayManager
     std::vector<TransactionEnvelope> getTopTransactions(size_t count,
                                                         int timeoutMs = 5000);
 
+    // Broadcast a StellarMessage to all peers (no relay)
+    bool broadcastDirect(StellarMessage const& msg);
+
+    // Send a StellarMessage to exactly one peer
+    bool sendToPeer(uint64_t peerId, StellarMessage const& msg);
+
     // Metrics and managers
     OverlayMetrics& getOverlayMetrics();
 

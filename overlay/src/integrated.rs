@@ -58,6 +58,14 @@ pub enum CoreCommand {
 
     /// Cache a locally-built TX set
     CacheTxSet { hash: [u8; 32], xdr: Vec<u8> },
+
+    /// Resolve compact short IDs against the mempool
+    ResolveShortIds {
+        tx_set_content_hash: [u8; 32],
+        nonce: u64,
+        short_ids: Vec<[u8; 6]>,
+        reply: mpsc::Sender<Vec<(u8, Vec<u8>)>>, // (status, envelope_bytes)
+    },
 }
 
 /// Events from Overlay to Core
@@ -192,6 +200,31 @@ impl Overlay {
                 let mut cache = self.local_tx_sets.write().await;
                 cache.insert(hash, xdr);
             }
+
+            CoreCommand::ResolveShortIds {
+                tx_set_content_hash,
+                nonce,
+                short_ids,
+                reply,
+            } => {
+                let mempool = self.mempool.read().await;
+                let result = crate::compact::resolver::resolve(
+                    &mempool,
+                    &tx_set_content_hash,
+                    nonce,
+                    &short_ids,
+                );
+                let entries: Vec<(u8, Vec<u8>)> = result
+                    .entries
+                    .into_iter()
+                    .map(|e| match e {
+                        crate::compact::resolver::ResolveStatus::Unique(data) => (0u8, data),
+                        crate::compact::resolver::ResolveStatus::Missing => (1u8, Vec::new()),
+                        crate::compact::resolver::ResolveStatus::Ambiguous => (2u8, Vec::new()),
+                    })
+                    .collect();
+                let _ = reply.send(entries).await;
+            }
         }
     }
 
@@ -267,6 +300,24 @@ impl OverlayHandle {
             reply: reply_tx,
         });
         reply_rx.recv().await.flatten()
+    }
+
+    /// Resolve compact short IDs against the mempool.
+    /// Returns (status, envelope_bytes) for each short ID in positional order.
+    pub async fn resolve_short_ids(
+        &self,
+        tx_set_content_hash: [u8; 32],
+        nonce: u64,
+        short_ids: Vec<[u8; 6]>,
+    ) -> Vec<(u8, Vec<u8>)> {
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        let _ = self.cmd_tx.send(CoreCommand::ResolveShortIds {
+            tx_set_content_hash,
+            nonce,
+            short_ids,
+            reply: reply_tx,
+        });
+        reply_rx.recv().await.unwrap_or_default()
     }
 }
 

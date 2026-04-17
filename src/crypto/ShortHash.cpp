@@ -3,7 +3,9 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "ShortHash.h"
+#include "crypto/SHA.h"
 #include "fmt/format.h"
+#include <cstring>
 #include <mutex>
 #include <sodium.h>
 
@@ -82,6 +84,41 @@ void
 XDRShortHasher::hashBytes(unsigned char const* bytes, size_t len)
 {
     state.update(bytes, len);
+}
+
+ShortTxId
+computeCompactTxSetShortId(Hash const& txSetContentHash, uint64_t nonce,
+                           Hash const& txFullHash)
+{
+    // Key derivation: SHA-256(txSetContentHash || nonce_le)
+    uint8_t nonceLe[8];
+    for (int i = 0; i < 8; ++i)
+    {
+        nonceLe[i] = static_cast<uint8_t>(nonce >> (i * 8));
+    }
+
+    SHA256 hasher;
+    hasher.add(ByteSlice(txSetContentHash.data(), txSetContentHash.size()));
+    hasher.add(ByteSlice(nonceLe, 8));
+    auto keyHash = hasher.finish();
+
+    // k0 = first 8 bytes as little-endian uint64
+    // k1 = next 8 bytes as little-endian uint64
+    uint8_t sipKey[16];
+    std::memcpy(sipKey, keyHash.data(), 16);
+
+    // SipHash-2-4 of the transaction full hash
+    SipHash24 sip(sipKey);
+    sip.update(txFullHash.data(), txFullHash.size());
+    uint64_t digest = sip.digest();
+
+    // Truncate to least significant 6 bytes (little-endian byte order)
+    ShortTxId result;
+    for (int i = 0; i < 6; ++i)
+    {
+        result[i] = static_cast<uint8_t>(digest >> (i * 8));
+    }
+    return result;
 }
 }
 }

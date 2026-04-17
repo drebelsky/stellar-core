@@ -7,11 +7,16 @@
 #include "crypto/ByteSlice.h"
 #include "crypto/XDRHasher.h"
 #include "util/siphash.h"
+#include "xdr/Stellar-types.h"
 
+#include <array>
 #include <sodium.h>
 
 namespace stellar
 {
+
+// 6-byte truncated SipHash-2-4 short transaction ID for compact tx set relay.
+using ShortTxId = std::array<uint8_t, 6>;
 
 // shortHash provides a fast and relatively secure *randomized* hash function
 // this is suitable for keeping objects in memory but not for persisting objects
@@ -24,6 +29,15 @@ std::array<unsigned char, crypto_shorthash_KEYBYTES> getShortHashInitKey();
 void seed(unsigned int);
 #endif
 uint64_t computeHash(stellar::ByteSlice const& b);
+
+// Compute a 6-byte short transaction ID for compact tx set relay (BIP 0152).
+// Key is derived from SHA-256(txSetContentHash || nonce_le), then SipHash-2-4
+// is applied to the transaction's full hash (SHA-256 of the XDR-serialized
+// TransactionEnvelope). The result is the least-significant 6 bytes of the
+// SipHash output in little-endian byte order.
+ShortTxId computeCompactTxSetShortId(Hash const& txSetContentHash,
+                                     uint64_t nonce,
+                                     Hash const& txFullHash);
 
 struct XDRShortHasher : XDRHasher<XDRShortHasher>
 {

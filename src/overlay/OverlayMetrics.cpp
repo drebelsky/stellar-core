@@ -58,6 +58,56 @@ OverlayMetrics::OverlayMetrics(Application& app)
           {"overlay", "connection", "authenticated"}))
     , mFetchTxSetTimer(
           app.getMetrics().NewTimer({"overlay", "fetch", "txset"}))
+    , mCompactTxSetSentCount(app.getMetrics().NewCounter(
+          {"compact-txset", "sent", "count"}))
+    , mCompactTxSetReceivedCount(app.getMetrics().NewCounter(
+          {"compact-txset", "received", "count"}))
+    , mCompactTxSetSendSkippedNoTxSetCount(app.getMetrics().NewCounter(
+          {"compact-txset", "send-skipped-no-txset", "count"}))
+    , mCompactTxSetArrivedAfterFullFetchCount(app.getMetrics().NewCounter(
+          {"compact-txset", "arrived-after-full-fetch", "count"}))
+    , mCompactTxSetBytesSentTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "bytes-sent", "total"}))
+    , mCompactTxSetBytesReceivedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "bytes-received", "total"}))
+    , mCompactTxSetRequestBytesSentTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "request-bytes-sent", "total"}))
+    , mCompactTxSetResponseBytesSentTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "response-bytes-sent", "total"}))
+    , mCompactTxSetRequestBytesReceivedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "request-bytes-received", "total"}))
+    , mCompactTxSetResponseBytesReceivedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "response-bytes-received", "total"}))
+    , mCompactTxSetFullTxSetBytesTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "full-txset-bytes", "total"}))
+    , mCompactTxSetNetBytesSavedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "net-bytes-saved", "total"}))
+    , mCompactTxSetNetBytesWastedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "net-bytes-wasted", "total"}))
+    , mCompactTxSetTxCountTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "tx-count", "total"}))
+    , mCompactTxSetMissingTxCountTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "missing-tx-count", "total"}))
+    , mCompactTxSetReconstructionSuccessCount(app.getMetrics().NewCounter(
+          {"compact-txset", "reconstruction-success", "count"}))
+    , mCompactTxSetReconstructionWithFetchCount(app.getMetrics().NewCounter(
+          {"compact-txset", "reconstruction-with-fetch", "count"}))
+    , mCompactTxSetFallbackToFullFetchCount(app.getMetrics().NewCounter(
+          {"compact-txset", "fallback-to-full-fetch", "count"}))
+    , mCompactTxSetRefillShortCircuitCount(app.getMetrics().NewCounter(
+          {"compact-txset", "refill-short-circuit", "count"}))
+    , mCompactTxSetShortIdAmbiguityCount(app.getMetrics().NewCounter(
+          {"compact-txset", "short-id-ambiguity", "count"}))
+    , mCompactTxSetReconstructionLatencyTotalMs(app.getMetrics().NewCounter(
+          {"compact-txset", "reconstruction-latency-total", "ms"}))
+    , mCompactTxSetRefillLatencyTotalMs(app.getMetrics().NewCounter(
+          {"compact-txset", "refill-latency-total", "ms"}))
+    , mCompactTxSetRedundantReceivedCount(app.getMetrics().NewCounter(
+          {"compact-txset", "redundant-received", "count"}))
+    , mCompactTxSetRedundantBytesReceivedTotal(app.getMetrics().NewCounter(
+          {"compact-txset", "redundant-bytes-received", "total"}))
+    , mCompactTxSetSendSkippedPerPeerDedupCount(app.getMetrics().NewCounter(
+          {"compact-txset", "send-skipped-per-peer-dedup", "count"}))
 {
 }
 }

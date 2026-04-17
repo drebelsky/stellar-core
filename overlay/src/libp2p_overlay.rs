@@ -36,6 +36,7 @@ use tracing::{debug, error, info, trace, warn};
 pub const SCP_PROTOCOL: StreamProtocol = StreamProtocol::new("/stellar/scp/1.0.0");
 pub const TX_PROTOCOL: StreamProtocol = StreamProtocol::new("/stellar/tx/1.0.0");
 pub const TXSET_PROTOCOL: StreamProtocol = StreamProtocol::new("/stellar/txset/1.0.0");
+pub const COMPACT_PROTOCOL: StreamProtocol = StreamProtocol::new("/stellar/compact/1.0.0");
 
 /// Message frame: 4-byte length prefix + payload
 /// Max message size: 16MB (for large TX sets)
@@ -66,6 +67,25 @@ pub enum OverlayEvent {
     PeerConnected { peer_id: PeerId, addr: Multiaddr },
     /// Peer disconnected - clean up any pending requests
     PeerDisconnected { peer_id: PeerId },
+    /// Compact tx set received from peer with auto-resolved short IDs.
+    CompactTxSetReceived {
+        from: PeerId,
+        raw_bytes: Vec<u8>,
+        resolved: Vec<(u8, Vec<u8>)>, // (status, envelope_bytes)
+    },
+    /// Refill request (GET_COMPACT_TX_SET_TXS) received from peer.
+    GetCompactTxSetTxsReceived {
+        from: PeerId,
+        raw_bytes: Vec<u8>,
+    },
+    /// Refill response (COMPACT_TX_SET_TXS) forwarded from peer.
+    RefillForwarded {
+        from: PeerId,
+        tx_set_hash: [u8; 32],
+        nonce: u64,
+        packed_short_ids: Vec<u8>,
+        envelope_array_bytes: Vec<u8>,
+    },
 }
 
 /// Commands to the overlay
@@ -93,6 +113,10 @@ pub enum OverlayCommand {
     RequestScpState { ledger_seq: u32 },
     /// Send SCP envelope to a specific peer
     SendScpToPeer { peer_id: PeerId, envelope: Vec<u8> },
+    /// Broadcast a message to all peers (no relay) — used for compact tx set
+    BroadcastDirect(Vec<u8>),
+    /// Send a message to a specific peer — used for compact refill req/resp
+    SendToPeer { peer_id: PeerId, message: Vec<u8> },
     /// Shutdown
     Shutdown,
     /// Query the number of connected peers (responds via oneshot)
@@ -107,6 +131,7 @@ struct PeerOutboundStreams {
     scp: Mutex<Option<Stream>>,
     tx: Mutex<Option<Stream>>,
     txset: Mutex<Option<Stream>>,
+    compact: Mutex<Option<Stream>>,
 }
 
 impl PeerOutboundStreams {
@@ -115,6 +140,7 @@ impl PeerOutboundStreams {
             scp: Mutex::new(None),
             tx: Mutex::new(None),
             txset: Mutex::new(None),
+            compact: Mutex::new(None),
         }
     }
 }
@@ -227,6 +253,27 @@ impl OverlayHandle {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Channel closed"))?;
         Ok(())
+    }
+
+    /// Broadcast a message to all peers without relay (compact tx set).
+    pub async fn broadcast_direct(&self, message: Vec<u8>) {
+        if let Err(e) = self.cmd_tx.send(OverlayCommand::BroadcastDirect(message)).await {
+            warn!("Overlay command channel closed, failed to send BroadcastDirect: {}", e);
+        }
+    }
+
+    /// Send a message to a specific peer (compact refill req/resp).
+    pub async fn send_to_peer(&self, peer_id: PeerId, message: Vec<u8>) {
+        if let Err(e) = self
+            .cmd_tx
+            .send(OverlayCommand::SendToPeer {
+                peer_id,
+                message,
+            })
+            .await
+        {
+            warn!("Overlay command channel closed, failed to send SendToPeer: {}", e);
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -451,12 +498,20 @@ impl StellarOverlay {
                 return;
             }
         };
+        let compact_incoming = match self.control.accept(COMPACT_PROTOCOL) {
+            Ok(incoming) => incoming,
+            Err(e) => {
+                error!("Failed to accept Compact protocol streams: {:?}. Overlay cannot function.", e);
+                return;
+            }
+        };
 
         // Spawn inbound stream handlers
         let state = self.state.clone();
         tokio::spawn(handle_inbound_scp_streams(scp_incoming, state.clone()));
         tokio::spawn(handle_inbound_tx_streams(tx_incoming, state.clone()));
         tokio::spawn(handle_inbound_txset_streams(txset_incoming, state.clone()));
+        tokio::spawn(handle_inbound_compact_streams(compact_incoming, state.clone()));
 
         // Spawn INV/GETDATA housekeeping task
         tokio::spawn(inv_getdata_housekeeping_task(state.clone()));
@@ -522,6 +577,51 @@ impl StellarOverlay {
                             if let Err(e) = send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &envelope).await {
                                 warn!("Failed to send SCP to {}: {:?}", peer_id, e);
                             }
+                        }
+                        OverlayCommand::BroadcastDirect(message) => {
+                            // Send to all connected peers on the compact stream (no relay)
+                            let streams = self.state.peer_streams.read().await;
+                            let all_peers: Vec<PeerId> = streams.keys().cloned().collect();
+                            drop(streams);
+
+                            let msg_len = message.len();
+                            info!(
+                                "COMPACT_BROADCAST: Sending {} bytes to {} peers",
+                                msg_len,
+                                all_peers.len()
+                            );
+
+                            for peer_id in all_peers {
+                                let state = Arc::clone(&self.state);
+                                let msg = message.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = send_to_peer_stream(
+                                        &state,
+                                        peer_id.clone(),
+                                        StreamType::Compact,
+                                        &msg,
+                                    )
+                                    .await
+                                    {
+                                        warn!("Failed to broadcast direct to {}: {:?}", peer_id, e);
+                                    }
+                                });
+                            }
+                        }
+                        OverlayCommand::SendToPeer { peer_id, message } => {
+                            let state = Arc::clone(&self.state);
+                            tokio::spawn(async move {
+                                if let Err(e) = send_to_peer_stream(
+                                    &state,
+                                    peer_id.clone(),
+                                    StreamType::Compact,
+                                    &message,
+                                )
+                                .await
+                                {
+                                    warn!("Failed to send to peer {}: {:?}", peer_id, e);
+                                }
+                            });
                         }
                         OverlayCommand::Shutdown => {
                             info!("Overlay shutting down");
@@ -985,12 +1085,15 @@ async fn open_streams_to_peer(mut control: Control, state: Arc<SharedState>, pee
 
     let mut control2 = control.clone();
     let mut control3 = control.clone();
+    let mut control4 = control.clone();
 
     let scp_fut = async { control.open_stream(peer_id, SCP_PROTOCOL).await };
     let tx_fut = async { control2.open_stream(peer_id, TX_PROTOCOL).await };
     let txset_fut = async { control3.open_stream(peer_id, TXSET_PROTOCOL).await };
+    let compact_fut = async { control4.open_stream(peer_id, COMPACT_PROTOCOL).await };
 
-    let (scp_result, tx_result, txset_result) = tokio::join!(scp_fut, tx_fut, txset_fut);
+    let (scp_result, tx_result, txset_result, compact_result) =
+        tokio::join!(scp_fut, tx_fut, txset_fut, compact_fut);
 
     let scp_stream = match scp_result {
         Ok(s) => {
@@ -1025,6 +1128,17 @@ async fn open_streams_to_peer(mut control: Control, state: Arc<SharedState>, pee
         }
     };
 
+    let compact_stream = match compact_result {
+        Ok(s) => {
+            debug!("Opened Compact stream to {}", peer_id);
+            Some(s)
+        }
+        Err(e) => {
+            warn!("Failed to open Compact stream to {}: {:?}", peer_id, e);
+            None
+        }
+    };
+
     // Store streams
     {
         let streams = state.peer_streams.read().await;
@@ -1037,6 +1151,9 @@ async fn open_streams_to_peer(mut control: Control, state: Arc<SharedState>, pee
             }
             if let Some(stream) = txset_stream {
                 *peer_streams.txset.lock().await = Some(stream);
+            }
+            if let Some(stream) = compact_stream {
+                *peer_streams.compact.lock().await = Some(stream);
             }
         }
     }
@@ -1061,6 +1178,7 @@ enum StreamType {
     Scp,
     Tx,
     TxSet,
+    Compact,
 }
 
 impl StreamType {
@@ -1069,6 +1187,7 @@ impl StreamType {
             StreamType::Scp => SCP_PROTOCOL,
             StreamType::Tx => TX_PROTOCOL,
             StreamType::TxSet => TXSET_PROTOCOL,
+            StreamType::Compact => COMPACT_PROTOCOL,
         }
     }
 }
@@ -1093,6 +1212,7 @@ async fn try_send_to_existing_stream(
         StreamType::Scp => &peer_streams.scp,
         StreamType::Tx => &peer_streams.tx,
         StreamType::TxSet => &peer_streams.txset,
+        StreamType::Compact => &peer_streams.compact,
     };
 
     let mut stream_guard = stream_mutex.lock().await;
@@ -1133,6 +1253,7 @@ async fn send_to_peer_stream(
             StreamType::Scp => &peer_streams.scp,
             StreamType::Tx => &peer_streams.tx,
             StreamType::TxSet => &peer_streams.txset,
+            StreamType::Compact => &peer_streams.compact,
         };
 
         let mut stream_guard = stream_mutex.lock().await;
@@ -1739,6 +1860,141 @@ async fn handle_inbound_txset_streams(mut incoming: IncomingStreams, state: Arc<
             }
         });
     }
+}
+
+/// XDR MessageType enum values for compact tx set messages.
+const XDR_MSG_TYPE_COMPACT_TX_SET: u32 = 25;
+const XDR_MSG_TYPE_GET_COMPACT_TX_SET_TXS: u32 = 26;
+const XDR_MSG_TYPE_COMPACT_TX_SET_TXS: u32 = 27;
+
+/// Handle inbound compact tx set streams from peers.
+///
+/// Messages on this stream use the same 4-byte-length-prefixed framing
+/// as other streams. The payload is a raw StellarMessage XDR whose first
+/// 4 bytes are the XDR MessageType discriminant (25, 26, or 27).
+///
+/// Resolution against the mempool happens in main.rs when handling the event,
+/// not here, because the mempool lives in the integrated module.
+async fn handle_inbound_compact_streams(mut incoming: IncomingStreams, state: Arc<SharedState>) {
+    while let Some((peer_id, mut stream)) = incoming.next().await {
+        info!("COMPACT_STREAM: Accepted inbound compact stream from {}", peer_id);
+        let state = state.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match read_framed(&mut stream).await {
+                    Ok(payload) => {
+                        state.metrics.message_read.fetch_add(1, Ordering::Relaxed);
+                        state.metrics.byte_read.fetch_add(payload.len() as u64, Ordering::Relaxed);
+
+                        if payload.len() < 4 {
+                            warn!("COMPACT_RECV: Message too short ({} bytes) from {}", payload.len(), peer_id);
+                            continue;
+                        }
+
+                        // XDR union discriminant (MessageType) is the first 4 bytes, big-endian
+                        let msg_type = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+                        // XDR body starts after the discriminant
+                        let xdr_body = &payload[4..];
+
+                        match msg_type {
+                            XDR_MSG_TYPE_COMPACT_TX_SET => {
+                                info!(
+                                    "COMPACT_RECV: COMPACT_TX_SET ({} bytes) from {}",
+                                    payload.len(),
+                                    peer_id
+                                );
+                                if let Err(e) = state.event_tx.send(OverlayEvent::CompactTxSetReceived {
+                                    from: peer_id.clone(),
+                                    raw_bytes: payload,
+                                    resolved: Vec::new(), // resolved in main.rs
+                                }) {
+                                    warn!("Failed to forward CompactTxSetReceived: {}", e);
+                                }
+                            }
+                            XDR_MSG_TYPE_GET_COMPACT_TX_SET_TXS => {
+                                info!(
+                                    "COMPACT_RECV: GET_COMPACT_TX_SET_TXS ({} bytes) from {}",
+                                    payload.len(),
+                                    peer_id
+                                );
+                                if let Err(e) = state.event_tx.send(OverlayEvent::GetCompactTxSetTxsReceived {
+                                    from: peer_id.clone(),
+                                    raw_bytes: payload,
+                                }) {
+                                    warn!("Failed to forward GetCompactTxSetTxsReceived: {}", e);
+                                }
+                            }
+                            XDR_MSG_TYPE_COMPACT_TX_SET_TXS => {
+                                // Parse the fixed header from the XDR body:
+                                //   txSetHash[32] + nonce[8] + PackedShortTxIds (4-byte XDR length + data)
+                                // Everything after is the envelope array bytes.
+                                if xdr_body.len() < 44 {
+                                    warn!("COMPACT_RECV: COMPACT_TX_SET_TXS body too short ({} bytes)", xdr_body.len());
+                                    continue;
+                                }
+                                let mut tx_set_hash = [0u8; 32];
+                                tx_set_hash.copy_from_slice(&xdr_body[0..32]);
+                                let nonce = u64::from_le_bytes(xdr_body[32..40].try_into().unwrap());
+                                // XDR opaque<>: 4-byte BE length prefix
+                                let short_ids_len = u32::from_be_bytes(xdr_body[40..44].try_into().unwrap()) as usize;
+
+                                let short_ids_end = 44 + short_ids_len;
+                                // XDR pads opaque to 4-byte boundary
+                                let padded_short_ids_end = short_ids_end + ((4 - (short_ids_len % 4)) % 4);
+
+                                if xdr_body.len() < padded_short_ids_end {
+                                    warn!("COMPACT_RECV: COMPACT_TX_SET_TXS short IDs truncated");
+                                    continue;
+                                }
+                                if short_ids_len % 6 != 0 {
+                                    warn!("COMPACT_RECV: COMPACT_TX_SET_TXS short IDs length not multiple of 6");
+                                    continue;
+                                }
+
+                                let packed_short_ids = xdr_body[44..short_ids_end].to_vec();
+                                let envelope_array_bytes = xdr_body[padded_short_ids_end..].to_vec();
+
+                                info!(
+                                    "COMPACT_RECV: COMPACT_TX_SET_TXS ({} short IDs, {} envelope bytes) from {}",
+                                    short_ids_len / 6,
+                                    envelope_array_bytes.len(),
+                                    peer_id
+                                );
+
+                                if let Err(e) = state.event_tx.send(OverlayEvent::RefillForwarded {
+                                    from: peer_id.clone(),
+                                    tx_set_hash,
+                                    nonce,
+                                    packed_short_ids,
+                                    envelope_array_bytes,
+                                }) {
+                                    warn!("Failed to forward RefillForwarded: {}", e);
+                                }
+                            }
+                            _ => {
+                                warn!("COMPACT_RECV: Unexpected XDR message type {} from {}", msg_type, peer_id);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("COMPACT_STREAM_CLOSED: Stream from {} closed: {}", peer_id, e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Convert a libp2p PeerId to a u64 for IPC (truncated hash).
+pub fn peer_id_to_u64(peer_id: &PeerId) -> u64 {
+    let bytes = peer_id.to_bytes();
+    let mut hash = [0u8; 8];
+    for (i, b) in bytes.iter().enumerate() {
+        hash[i % 8] ^= b;
+    }
+    u64::from_le_bytes(hash)
 }
 
 /// INV/GETDATA housekeeping task.

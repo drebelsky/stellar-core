@@ -68,5 +68,32 @@ struct OverlayMetrics
 
     // ── TxSet fetch latency ──
     medida::Timer& mFetchTxSetTimer;
+
+    // ── Compact tx set relay metrics ──
+    medida::Counter& mCompactTxSetSentCount;
+    medida::Counter& mCompactTxSetReceivedCount;
+    medida::Counter& mCompactTxSetSendSkippedNoTxSetCount;
+    medida::Counter& mCompactTxSetArrivedAfterFullFetchCount;
+    medida::Counter& mCompactTxSetBytesSentTotal;
+    medida::Counter& mCompactTxSetBytesReceivedTotal;
+    medida::Counter& mCompactTxSetRequestBytesSentTotal;
+    medida::Counter& mCompactTxSetResponseBytesSentTotal;
+    medida::Counter& mCompactTxSetRequestBytesReceivedTotal;
+    medida::Counter& mCompactTxSetResponseBytesReceivedTotal;
+    medida::Counter& mCompactTxSetFullTxSetBytesTotal;
+    medida::Counter& mCompactTxSetNetBytesSavedTotal;
+    medida::Counter& mCompactTxSetNetBytesWastedTotal;
+    medida::Counter& mCompactTxSetTxCountTotal;
+    medida::Counter& mCompactTxSetMissingTxCountTotal;
+    medida::Counter& mCompactTxSetReconstructionSuccessCount;
+    medida::Counter& mCompactTxSetReconstructionWithFetchCount;
+    medida::Counter& mCompactTxSetFallbackToFullFetchCount;
+    medida::Counter& mCompactTxSetRefillShortCircuitCount;
+    medida::Counter& mCompactTxSetShortIdAmbiguityCount;
+    medida::Counter& mCompactTxSetReconstructionLatencyTotalMs;
+    medida::Counter& mCompactTxSetRefillLatencyTotalMs;
+    medida::Counter& mCompactTxSetRedundantReceivedCount;
+    medida::Counter& mCompactTxSetRedundantBytesReceivedTotal;
+    medida::Counter& mCompactTxSetSendSkippedPerPeerDedupCount;
 };
 }

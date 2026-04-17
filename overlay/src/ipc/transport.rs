@@ -97,6 +97,69 @@ impl CoreSender {
         payload.extend_from_slice(&xdr);
         self.send(Message::new(MessageType::TxSetAvailable, payload))
     }
+
+    /// Send compact tx set received notification with resolution results.
+    /// Payload: [peerId:8][rawLen:4][raw bytes][count:4][entries...]
+    /// Each entry: [status:u8][envelope_len:u32][envelope_bytes...]
+    pub fn send_compact_tx_set_received(
+        &self,
+        peer_id: u64,
+        raw_bytes: &[u8],
+        resolved: &[(u8, &[u8])], // (status, envelope_bytes)
+    ) -> Result<(), IpcError> {
+        let mut payload =
+            Vec::with_capacity(8 + 4 + raw_bytes.len() + 4 + resolved.len() * 5);
+        payload.extend_from_slice(&peer_id.to_le_bytes());
+        payload.extend_from_slice(&(raw_bytes.len() as u32).to_le_bytes());
+        payload.extend_from_slice(raw_bytes);
+        payload.extend_from_slice(&(resolved.len() as u32).to_le_bytes());
+        for (status, env_bytes) in resolved {
+            payload.push(*status);
+            payload.extend_from_slice(&(env_bytes.len() as u32).to_le_bytes());
+            payload.extend_from_slice(env_bytes);
+        }
+        self.send(Message::new(MessageType::CompactTxSetReceived, payload))
+    }
+
+    /// Send refill request received notification.
+    /// Payload: [peerId:8][raw bytes]
+    pub fn send_get_compact_tx_set_txs_received(
+        &self,
+        peer_id: u64,
+        raw_bytes: &[u8],
+    ) -> Result<(), IpcError> {
+        let mut payload = Vec::with_capacity(8 + raw_bytes.len());
+        payload.extend_from_slice(&peer_id.to_le_bytes());
+        payload.extend_from_slice(raw_bytes);
+        self.send(Message::new(
+            MessageType::GetCompactTxSetTxsReceived,
+            payload,
+        ))
+    }
+
+    /// Send refill response forwarded notification.
+    /// Payload: [txSetHash:32][nonce:8][peerId:8]
+    ///          [shortIdsLen:4][packedShortIds]
+    ///          [envelopeArrayLen:4][envelopeArrayBytes]
+    pub fn send_refill_forwarded(
+        &self,
+        tx_set_hash: &[u8; 32],
+        nonce: u64,
+        peer_id: u64,
+        packed_short_ids: &[u8],
+        envelope_array_bytes: &[u8],
+    ) -> Result<(), IpcError> {
+        let mut payload =
+            Vec::with_capacity(32 + 8 + 8 + 4 + packed_short_ids.len() + 4 + envelope_array_bytes.len());
+        payload.extend_from_slice(tx_set_hash);
+        payload.extend_from_slice(&nonce.to_le_bytes());
+        payload.extend_from_slice(&peer_id.to_le_bytes());
+        payload.extend_from_slice(&(packed_short_ids.len() as u32).to_le_bytes());
+        payload.extend_from_slice(packed_short_ids);
+        payload.extend_from_slice(&(envelope_array_bytes.len() as u32).to_le_bytes());
+        payload.extend_from_slice(envelope_array_bytes);
+        self.send(Message::new(MessageType::RefillForwarded, payload))
+    }
 }
 
 /// Handle for receiving messages from Core.

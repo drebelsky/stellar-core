@@ -10,6 +10,7 @@
 #include "crypto/KeyUtils.h"
 #include "crypto/SHA.h"
 #include "crypto/SecretKey.h"
+#include "herder/CompactTxSet.h"
 #include "herder/FilteredEntries.h"
 #include "herder/HerderPersistence.h"
 #include "herder/HerderUtils.h"
@@ -28,6 +29,7 @@
 #include "main/PersistentState.h"
 #include "medida/counter.h"
 #include "medida/meter.h"
+#include "overlay/OverlayMetrics.h"
 #include "overlay/RustOverlayManager.h"
 #include "process/ProcessManager.h"
 #include "scp/LocalNode.h"
@@ -572,6 +574,685 @@ HerderImpl::broadcast(SCPEnvelope const& e)
         m->type(SCP_MESSAGE);
         m->envelope() = e;
         mApp.getOverlayManager().broadcastMessage(m);
+
+        // Attempt to send compact tx set alongside the SCP envelope.
+        maybeBroadcastCompactTxSetForEnvelope(e);
+    }
+}
+
+void
+HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
+{
+    auto const& cfg = mApp.getConfig();
+
+    // Determine if this envelope type qualifies for compact tx set sending.
+    bool isNomination =
+        (e.statement.pledges.type() == SCP_ST_NOMINATE);
+    bool isBallot =
+        (e.statement.pledges.type() == SCP_ST_PREPARE ||
+         e.statement.pledges.type() == SCP_ST_CONFIRM ||
+         e.statement.pledges.type() == SCP_ST_EXTERNALIZE);
+
+    bool isOwnEnvelope =
+        (e.statement.nodeID == getSCP().getLocalNode()->getNodeID());
+
+    // Check config flags
+    if (isNomination)
+    {
+        if (isOwnEnvelope && !cfg.COMPACT_TX_SET_LEADER_NOMINATION)
+            return;
+        if (!isOwnEnvelope && !cfg.COMPACT_TX_SET_NON_LEADER_NOMINATION)
+            return;
+    }
+    else if (isBallot)
+    {
+        if (!cfg.COMPACT_TX_SET_BALLOT_ROUNDS)
+            return;
+    }
+    else
+    {
+        return;
+    }
+
+    // Extract tx set hashes from the envelope
+    auto txSetHashes = getTxSetHashes(e);
+    if (!txSetHashes)
+    {
+        return;
+    }
+
+    auto& overlayMgr = mApp.getOverlayManager();
+    auto& metrics = overlayMgr.getOverlayMetrics();
+
+    for (auto const& txSetHash : *txSetHashes)
+    {
+        // Per-peer dedup (broadcast-level): skip if we already sent
+        // a compact message for this tx set hash.
+        if (mCompactTxSetBroadcastDedup.count(txSetHash))
+        {
+            metrics.mCompactTxSetSendSkippedPerPeerDedupCount.inc();
+            continue;
+        }
+
+        // Check if we have a cached compact tx set for this hash
+        auto cachedIt = mCachedCompactTxSets.find(txSetHash);
+        if (cachedIt != mCachedCompactTxSets.end())
+        {
+            // Use cached serialized bytes
+            StellarMessage compactMsg;
+            try
+            {
+                xdr::xdr_from_opaque(cachedIt->second.serializedBytes,
+                                     compactMsg);
+            }
+            catch (std::exception const& ex)
+            {
+                CLOG_WARNING(Herder,
+                             "Failed to deserialize cached compact tx "
+                             "set: {}",
+                             ex.what());
+                continue;
+            }
+
+            overlayMgr.broadcastDirect(compactMsg);
+            mCompactTxSetBroadcastDedup.insert(txSetHash);
+            metrics.mCompactTxSetSentCount.inc();
+            metrics.mCompactTxSetBytesSentTotal.inc(
+                static_cast<int64_t>(
+                    cachedIt->second.serializedBytes.size()));
+            continue;
+        }
+
+        // Try to build the compact tx set from the full tx set
+        auto fullTxSet = mPendingEnvelopes.getTxSet(txSetHash);
+        if (!fullTxSet || !fullTxSet->isGeneralizedTxSet())
+        {
+            metrics.mCompactTxSetSendSkippedNoTxSetCount.inc();
+            continue;
+        }
+
+        // Generate a random nonce for this compact session
+        uint64_t nonce;
+        randombytes_buf(&nonce, sizeof(nonce));
+
+        CompactTransactionSet compact;
+        if (!buildCompactTxSet(*fullTxSet, nonce, compact))
+        {
+            continue;
+        }
+
+        // Wrap in StellarMessage
+        StellarMessage compactMsg;
+        compactMsg.type(COMPACT_TX_SET);
+        compactMsg.compactTxSet() = compact;
+
+        // Cache the serialized form
+        CachedCompactTxSet cached;
+        cached.nonce = nonce;
+        cached.serializedBytes = xdr::xdr_to_opaque(compactMsg);
+        mCachedCompactTxSets[txSetHash] = std::move(cached);
+
+        overlayMgr.broadcastDirect(compactMsg);
+        mCompactTxSetBroadcastDedup.insert(txSetHash);
+        metrics.mCompactTxSetSentCount.inc();
+        metrics.mCompactTxSetBytesSentTotal.inc(
+            static_cast<int64_t>(
+                mCachedCompactTxSets[txSetHash].serializedBytes.size()));
+
+        CLOG_DEBUG(Herder,
+                   "Broadcast compact tx set for hash {} (nonce={}, "
+                   "{} txs)",
+                   hexAbbrev(txSetHash), nonce,
+                   fullTxSet->sizeTxTotal());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compact tx set receive-side handlers
+// ---------------------------------------------------------------------------
+
+void
+HerderImpl::onCompactTxSetReceived(
+    uint64_t senderId, std::vector<uint8_t> const& rawBytes,
+    std::vector<ResolveResultEntry> const& resolved)
+{
+    auto& metrics = mApp.getOverlayManager().getOverlayMetrics();
+
+    // Parse the CompactTransactionSet from raw bytes.
+    CompactTransactionSet compact;
+    try
+    {
+        xdr::xdr_from_opaque(rawBytes, compact);
+    }
+    catch (std::exception const& ex)
+    {
+        CLOG_WARNING(Herder,
+                     "onCompactTxSetReceived: failed to parse compact "
+                     "tx set: {}",
+                     ex.what());
+        return;
+    }
+
+    auto const& txSetHash = compact.txSetHash;
+    auto const nonce = compact.nonce;
+
+    // Check if we already have this tx set (from full fetch or prior
+    // reconstruction).
+    if (mReconstructedTxSetHashes.count(txSetHash) ||
+        mPendingEnvelopes.getTxSet(txSetHash))
+    {
+        metrics.mCompactTxSetArrivedAfterFullFetchCount.inc();
+        CLOG_DEBUG(Herder,
+                   "onCompactTxSetReceived: tx set {} already available, "
+                   "ignoring compact",
+                   hexAbbrev(txSetHash));
+        return;
+    }
+
+    // Check for redundant compact sessions for the same (hash, nonce,
+    // sender).
+    CompactSessionKey key{txSetHash, nonce, senderId};
+    if (mCompactSessions.count(key))
+    {
+        metrics.mCompactTxSetRedundantReceivedCount.inc();
+        metrics.mCompactTxSetRedundantBytesReceivedTotal.inc(
+            static_cast<int64_t>(rawBytes.size()));
+        return;
+    }
+
+    metrics.mCompactTxSetReceivedCount.inc();
+    metrics.mCompactTxSetBytesReceivedTotal.inc(
+        static_cast<int64_t>(rawBytes.size()));
+
+    // Count total transactions across all phases for metrics and
+    // short-circuit.
+    size_t totalTxCount = 0;
+    for (size_t i = 0; i < 2; ++i)
+    {
+        auto const& phase = compact.phases[i];
+        switch (phase.v())
+        {
+        case 0:
+            for (auto const& comp : phase.v0Components())
+            {
+                totalTxCount += comp.shortTxIds.size() / 6;
+            }
+            break;
+        case 1:
+        {
+            auto const& par = phase.parallelTxsComponent();
+            for (auto const& stage : par.executionStages)
+            {
+                for (auto const& cluster : stage)
+                {
+                    totalTxCount += cluster.size() / 6;
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    metrics.mCompactTxSetTxCountTotal.inc(static_cast<int64_t>(totalTxCount));
+
+    // Count missing and ambiguous from the resolution.
+    size_t missingCount = 0;
+    size_t ambiguousCount = 0;
+    for (auto const& entry : resolved)
+    {
+        if (entry.status == ResolveResultEntry::Status::MISSING)
+            ++missingCount;
+        else if (entry.status == ResolveResultEntry::Status::AMBIGUOUS)
+            ++ambiguousCount;
+    }
+    metrics.mCompactTxSetMissingTxCountTotal.inc(
+        static_cast<int64_t>(missingCount));
+    metrics.mCompactTxSetShortIdAmbiguityCount.inc(
+        static_cast<int64_t>(ambiguousCount));
+
+    // Create session.
+    CompactSession session;
+    session.compact = compact;
+    session.resolved = resolved;
+    session.totalTxCount = totalTxCount;
+    session.receivedAt = mApp.getClock().now();
+
+    mCompactSessions[key] = std::move(session);
+
+    tryFinishCompactSession(txSetHash, nonce, senderId);
+}
+
+void
+HerderImpl::onGetCompactTxSetTxsReceived(
+    uint64_t senderId, std::vector<uint8_t> const& rawBytes)
+{
+    auto& metrics = mApp.getOverlayManager().getOverlayMetrics();
+
+    GetCompactTxSetTransactions req;
+    try
+    {
+        xdr::xdr_from_opaque(rawBytes, req);
+    }
+    catch (std::exception const& ex)
+    {
+        CLOG_WARNING(Herder,
+                     "onGetCompactTxSetTxsReceived: failed to parse: {}",
+                     ex.what());
+        return;
+    }
+
+    metrics.mCompactTxSetRequestBytesReceivedTotal.inc(
+        static_cast<int64_t>(rawBytes.size()));
+
+    // Look up the full tx set.
+    auto fullTxSet = mPendingEnvelopes.getTxSet(req.txSetHash);
+    if (!fullTxSet || !fullTxSet->isGeneralizedTxSet())
+    {
+        CLOG_DEBUG(Herder,
+                   "onGetCompactTxSetTxsReceived: tx set {} not available "
+                   "for refill",
+                   hexAbbrev(req.txSetHash));
+        metrics.mCompactTxSetSendSkippedNoTxSetCount.inc();
+        return;
+    }
+
+    // Unpack the requested short IDs.
+    std::vector<ShortTxId> requestedIds;
+    if (!unpackShortIds(req.shortTxIds, requestedIds))
+    {
+        CLOG_WARNING(Herder,
+                     "onGetCompactTxSetTxsReceived: invalid short ID length");
+        return;
+    }
+
+    // Build a set of requested short IDs for fast lookup.
+    std::set<ShortTxId> requestedSet(requestedIds.begin(), requestedIds.end());
+
+    // Walk the full tx set and compute short IDs using the request's nonce.
+    // Match against requested short IDs.
+    GeneralizedTransactionSet genTxSet;
+    fullTxSet->toXDR(genTxSet);
+
+    if (genTxSet.v() != 1)
+    {
+        return;
+    }
+    auto const& v1 = genTxSet.v1TxSet();
+
+    std::vector<ShortTxId> matchedIds;
+    xdr::xvector<TransactionEnvelope> matchedEnvs;
+
+    auto const& contentHash = fullTxSet->getContentsHash();
+    for (auto const& phase : v1.phases)
+    {
+        switch (phase.v())
+        {
+        case 0:
+            for (auto const& comp : phase.v0Components())
+            {
+                for (auto const& env :
+                     comp.txsMaybeDiscountedFee().txs)
+                {
+                    Hash txHash = xdrSha256(env);
+                    ShortTxId sid =
+                        shortHash::computeCompactTxSetShortId(
+                            contentHash, req.nonce, txHash);
+                    if (requestedSet.count(sid))
+                    {
+                        matchedIds.push_back(sid);
+                        matchedEnvs.push_back(env);
+                    }
+                }
+            }
+            break;
+        case 1:
+        {
+            auto const& par = phase.parallelTxsComponent();
+            for (auto const& stage : par.executionStages)
+            {
+                for (auto const& cluster : stage)
+                {
+                    for (auto const& env : cluster)
+                    {
+                        Hash txHash = xdrSha256(env);
+                        ShortTxId sid =
+                            shortHash::computeCompactTxSetShortId(
+                                contentHash, req.nonce, txHash);
+                        if (requestedSet.count(sid))
+                        {
+                            matchedIds.push_back(sid);
+                            matchedEnvs.push_back(env);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    // Build the response.
+    CompactTxSetTransactions resp;
+    resp.txSetHash = req.txSetHash;
+    resp.nonce = req.nonce;
+    resp.shortTxIds = packShortIds(matchedIds);
+    resp.txs = matchedEnvs;
+
+    StellarMessage msg;
+    msg.type(COMPACT_TX_SET_TXS);
+    msg.compactTxSetTxs() = resp;
+
+    auto responseBytes = xdr::xdr_to_opaque(msg);
+    metrics.mCompactTxSetResponseBytesSentTotal.inc(
+        static_cast<int64_t>(responseBytes.size()));
+
+    mApp.getOverlayManager().sendToPeer(senderId, msg);
+
+    CLOG_DEBUG(Herder,
+               "Sent refill response for {} ({} txs) to peer {}",
+               hexAbbrev(req.txSetHash), matchedEnvs.size(), senderId);
+}
+
+void
+HerderImpl::onRefillForwarded(Hash const& txSetHash, uint64_t nonce,
+                               uint64_t senderId,
+                               std::vector<uint8_t> const& packedShortIds,
+                               std::vector<uint8_t> const& envelopeArrayBytes)
+{
+    auto& metrics = mApp.getOverlayManager().getOverlayMetrics();
+    metrics.mCompactTxSetResponseBytesReceivedTotal.inc(
+        static_cast<int64_t>(packedShortIds.size() +
+                             envelopeArrayBytes.size()));
+
+    CompactSessionKey key{txSetHash, nonce, senderId};
+    auto it = mCompactSessions.find(key);
+    if (it == mCompactSessions.end())
+    {
+        CLOG_DEBUG(Herder,
+                   "onRefillForwarded: no session for {} (nonce={}, "
+                   "sender={})",
+                   hexAbbrev(txSetHash), nonce, senderId);
+        return;
+    }
+
+    // Unpack the short IDs from the response.
+    PackedShortTxIds packed(packedShortIds.begin(), packedShortIds.end());
+    std::vector<ShortTxId> refillIds;
+    if (!unpackShortIds(packed, refillIds))
+    {
+        CLOG_WARNING(Herder, "onRefillForwarded: invalid short ID length");
+        return;
+    }
+
+    // Parse the envelope array.
+    xdr::xvector<TransactionEnvelope> envelopes;
+    try
+    {
+        xdr::xdr_from_opaque(envelopeArrayBytes, envelopes);
+    }
+    catch (std::exception const& ex)
+    {
+        CLOG_WARNING(Herder,
+                     "onRefillForwarded: failed to parse envelopes: {}",
+                     ex.what());
+        // Fall back.
+        metrics.mCompactTxSetFallbackToFullFetchCount.inc();
+        mCompactSessions.erase(it);
+        mApp.getOverlayManager().requestTxSet(txSetHash);
+        return;
+    }
+
+    if (refillIds.size() != envelopes.size())
+    {
+        CLOG_WARNING(Herder,
+                     "onRefillForwarded: short ID count ({}) != envelope "
+                     "count ({})",
+                     refillIds.size(), envelopes.size());
+        metrics.mCompactTxSetFallbackToFullFetchCount.inc();
+        mCompactSessions.erase(it);
+        mApp.getOverlayManager().requestTxSet(txSetHash);
+        return;
+    }
+
+    // Record refill latency.
+    auto now = mApp.getClock().now();
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         now - it->second.receivedAt)
+                         .count();
+    metrics.mCompactTxSetRefillLatencyTotalMs.inc(
+        static_cast<int64_t>(elapsedMs));
+
+    // Build a map from refill short ID → envelope bytes for merging.
+    std::map<ShortTxId, xdr::opaque_vec<>> refillMap;
+    for (size_t i = 0; i < refillIds.size(); ++i)
+    {
+        refillMap[refillIds[i]] = xdr::xdr_to_opaque(envelopes[i]);
+    }
+
+    // Merge into the session's resolved map. Walk the compact structure
+    // to find the positional indices of the refilled short IDs.
+    auto& session = it->second;
+    size_t resolvedIdx = 0;
+    auto mergePhaseShortIds =
+        [&](PackedShortTxIds const& packedIds) {
+            std::vector<ShortTxId> ids;
+            if (!unpackShortIds(packedIds, ids))
+                return;
+            for (auto const& id : ids)
+            {
+                if (resolvedIdx < session.resolved.size())
+                {
+                    auto& entry = session.resolved[resolvedIdx];
+                    if (entry.status != ResolveResultEntry::Status::UNIQUE)
+                    {
+                        auto refillIt = refillMap.find(id);
+                        if (refillIt != refillMap.end())
+                        {
+                            entry.status =
+                                ResolveResultEntry::Status::UNIQUE;
+                            entry.envelopeBytes = refillIt->second;
+                        }
+                    }
+                }
+                ++resolvedIdx;
+            }
+        };
+
+    for (size_t phaseIdx = 0; phaseIdx < 2; ++phaseIdx)
+    {
+        auto const& phase = session.compact.phases[phaseIdx];
+        switch (phase.v())
+        {
+        case 0:
+            for (auto const& comp : phase.v0Components())
+            {
+                mergePhaseShortIds(comp.shortTxIds);
+            }
+            break;
+        case 1:
+        {
+            auto const& par = phase.parallelTxsComponent();
+            for (auto const& stage : par.executionStages)
+            {
+                for (auto const& cluster : stage)
+                {
+                    mergePhaseShortIds(cluster);
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    tryFinishCompactSession(txSetHash, nonce, senderId);
+}
+
+void
+HerderImpl::tryFinishCompactSession(Hash const& txSetHash, uint64_t nonce,
+                                     uint64_t senderId)
+{
+    auto& metrics = mApp.getOverlayManager().getOverlayMetrics();
+    CompactSessionKey key{txSetHash, nonce, senderId};
+    auto it = mCompactSessions.find(key);
+    if (it == mCompactSessions.end())
+    {
+        return;
+    }
+
+    auto& session = it->second;
+    auto const& lcl =
+        mLedgerManager.getLastClosedLedgerHeader().hash;
+    auto result = tryReconstruct(session.compact, session.resolved, lcl);
+
+    switch (result.status)
+    {
+    case ReconstructResult::Status::COMPLETE:
+    {
+        auto now = mApp.getClock().now();
+        auto latencyMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - session.receivedAt)
+                .count();
+        metrics.mCompactTxSetReconstructionLatencyTotalMs.inc(
+            static_cast<int64_t>(latencyMs));
+
+        if (session.refillRequested)
+        {
+            metrics.mCompactTxSetReconstructionWithFetchCount.inc();
+        }
+        else
+        {
+            metrics.mCompactTxSetReconstructionSuccessCount.inc();
+        }
+
+        // Compute bandwidth savings.
+        auto compactBytes = xdr::xdr_to_opaque(session.compact).size();
+        GeneralizedTransactionSet fullXdr;
+        result.txSet->toXDR(fullXdr);
+        auto fullBytes = xdr::xdr_to_opaque(fullXdr).size();
+        metrics.mCompactTxSetFullTxSetBytesTotal.inc(
+            static_cast<int64_t>(fullBytes));
+
+        if (fullBytes > compactBytes)
+        {
+            metrics.mCompactTxSetNetBytesSavedTotal.inc(
+                static_cast<int64_t>(fullBytes - compactBytes));
+        }
+        else
+        {
+            metrics.mCompactTxSetNetBytesWastedTotal.inc(
+                static_cast<int64_t>(compactBytes - fullBytes));
+        }
+
+        mReconstructedTxSetHashes.insert(txSetHash);
+        mCompactSessions.erase(it);
+
+        // Deliver to PendingEnvelopes. Use recvTxSet which checks
+        // pending fetches and re-processes waiting envelopes.
+        if (!mPendingEnvelopes.recvTxSet(txSetHash, result.txSet))
+        {
+            // No pending fetch for this hash yet — cache it so it's
+            // available when the SCP envelope arrives.
+            mPendingEnvelopes.addTxSet(txSetHash, 0, result.txSet);
+        }
+
+        CLOG_INFO(Herder,
+                  "Reconstructed tx set {} from compact ({}ms, {} txs, "
+                  "refill={})",
+                  hexAbbrev(txSetHash), latencyMs,
+                  session.totalTxCount,
+                  session.refillRequested);
+        break;
+    }
+    case ReconstructResult::Status::NEEDS_REFILL:
+    {
+        if (session.refillRequested)
+        {
+            // Already tried refill once, fall back.
+            CLOG_WARNING(
+                Herder,
+                "Compact reconstruction still incomplete after refill "
+                "for {}, falling back to full fetch",
+                hexAbbrev(txSetHash));
+            metrics.mCompactTxSetFallbackToFullFetchCount.inc();
+            mCompactSessions.erase(it);
+            mApp.getOverlayManager().requestTxSet(txSetHash);
+            break;
+        }
+
+        // Check refill short-circuit: if too many are missing,
+        // skip refill and go straight to full fetch.
+        size_t refillCount = result.missingShortIds.size();
+        double ratio =
+            session.totalTxCount > 0
+                ? static_cast<double>(refillCount) /
+                      static_cast<double>(session.totalTxCount)
+                : 1.0;
+
+        if (ratio >= mApp.getConfig().COMPACT_TX_SET_REFILL_MAX_RATIO)
+        {
+            CLOG_INFO(Herder,
+                      "Compact refill short-circuit for {} "
+                      "(missing={}/{}, ratio={:.2f} >= {:.2f})",
+                      hexAbbrev(txSetHash), refillCount,
+                      session.totalTxCount, ratio,
+                      mApp.getConfig().COMPACT_TX_SET_REFILL_MAX_RATIO);
+            metrics.mCompactTxSetRefillShortCircuitCount.inc();
+            mCompactSessions.erase(it);
+            mApp.getOverlayManager().requestTxSet(txSetHash);
+            break;
+        }
+
+        // Send refill request to the sender.
+        session.refillRequested = true;
+
+        GetCompactTxSetTransactions req;
+        req.txSetHash = txSetHash;
+        req.nonce = nonce;
+        req.shortTxIds = packShortIds(result.missingShortIds);
+
+        StellarMessage msg;
+        msg.type(GET_COMPACT_TX_SET_TXS);
+        msg.getCompactTxSetTxs() = req;
+
+        auto reqBytes = xdr::xdr_to_opaque(msg);
+        metrics.mCompactTxSetRequestBytesSentTotal.inc(
+            static_cast<int64_t>(reqBytes.size()));
+
+        mApp.getOverlayManager().sendToPeer(senderId, msg);
+
+        CLOG_DEBUG(Herder,
+                   "Sent refill request for {} ({} missing short IDs) "
+                   "to peer {}",
+                   hexAbbrev(txSetHash), refillCount, senderId);
+        break;
+    }
+    case ReconstructResult::Status::FAILED:
+    {
+        CLOG_WARNING(Herder,
+                     "Compact reconstruction failed for {}, falling "
+                     "back to full fetch",
+                     hexAbbrev(txSetHash));
+        metrics.mCompactTxSetFallbackToFullFetchCount.inc();
+
+        auto now = mApp.getClock().now();
+        auto latencyMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - session.receivedAt)
+                .count();
+        metrics.mCompactTxSetReconstructionLatencyTotalMs.inc(
+            static_cast<int64_t>(latencyMs));
+
+        mCompactSessions.erase(it);
+        mApp.getOverlayManager().requestTxSet(txSetHash);
+        break;
+    }
     }
 }
 
@@ -1060,6 +1741,13 @@ HerderImpl::lastClosedLedgerIncreased(bool latest, TxSetXDRFrameConstPtr txSet,
                                       bool upgradeApplied)
 {
     releaseAssert(threadIsMain());
+
+    // Clean up compact tx set relay state — the referenced tx sets are moot
+    // now that the ledger has advanced.
+    mCachedCompactTxSets.clear();
+    mCompactTxSetBroadcastDedup.clear();
+    mCompactSessions.clear();
+    mReconstructedTxSetHashes.clear();
 
     // Ensure potential upgrades are handled in overlay
     maybeHandleUpgrade();

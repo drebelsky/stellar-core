@@ -56,6 +56,14 @@ pub enum MessageType {
     /// Request overlay metrics snapshot (empty payload)
     RequestOverlayMetrics = 13,
 
+    /// Broadcast a StellarMessage to all directly connected peers (no relay).
+    /// Payload: [StellarMessage XDR]
+    BroadcastDirect = 14,
+
+    /// Send a StellarMessage to exactly one peer.
+    /// Payload: [peerId:8][StellarMessage XDR]
+    SendToPeer = 15,
+
     // ═══ Overlay → Core (Critical Path) ═══
     /// Received SCP envelope from network
     ScpReceived = 100,
@@ -77,6 +85,15 @@ pub enum MessageType {
 
     /// Overlay metrics snapshot response (JSON payload)
     OverlayMetricsResponse = 105,
+
+    /// Compact tx set received from peer with auto-resolved short IDs.
+    CompactTxSetReceived = 106,
+
+    /// Refill request received from peer.
+    GetCompactTxSetTxsReceived = 107,
+
+    /// Refill response forwarded from peer.
+    RefillForwarded = 108,
 }
 
 impl MessageType {
@@ -108,12 +125,17 @@ impl TryFrom<u32> for MessageType {
             11 => Ok(MessageType::RequestTxSet),
             12 => Ok(MessageType::CacheTxSet),
             13 => Ok(MessageType::RequestOverlayMetrics),
+            14 => Ok(MessageType::BroadcastDirect),
+            15 => Ok(MessageType::SendToPeer),
             100 => Ok(MessageType::ScpReceived),
             101 => Ok(MessageType::TopTxsResponse),
             102 => Ok(MessageType::PeerRequestsScpState),
             103 => Ok(MessageType::TxSetAvailable),
             104 => Ok(MessageType::QuorumSetAvailable),
             105 => Ok(MessageType::OverlayMetricsResponse),
+            106 => Ok(MessageType::CompactTxSetReceived),
+            107 => Ok(MessageType::GetCompactTxSetTxsReceived),
+            108 => Ok(MessageType::RefillForwarded),
             _ => Err(InvalidMessageType(value)),
         }
     }
@@ -439,8 +461,9 @@ mod tests {
     fn test_message_type_try_from_invalid() {
         assert!(MessageType::try_from(0).is_err());
         assert!(MessageType::try_from(9).is_err()); // gap between 8 and 10
+        assert!(MessageType::try_from(16).is_err()); // gap between 15 and 100
         assert!(MessageType::try_from(99).is_err());
-        assert!(MessageType::try_from(106).is_err());
+        assert!(MessageType::try_from(109).is_err());
         assert!(MessageType::try_from(u32::MAX).is_err());
     }
 }

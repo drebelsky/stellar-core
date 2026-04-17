@@ -8,6 +8,7 @@
 //! Uses QUIC transport for true stream independence - SCP never blocked by TX.
 //! Communicates with Core via Unix domain socket IPC.
 
+mod compact;
 mod config;
 mod flood;
 mod http;
@@ -452,6 +453,8 @@ struct App {
     peer_hostnames: Arc<RwLock<HashMap<PeerId, String>>>,
     /// Shared metrics counters for the overlay
     metrics: Arc<OverlayMetrics>,
+    /// Mapping from u64 peer IDs (used in IPC) to libp2p PeerIds
+    peer_id_map: Arc<RwLock<HashMap<u64, PeerId>>>,
 }
 
 /// Peer addresses configured via SetPeerConfig, used for reconnection.
@@ -534,6 +537,7 @@ impl App {
             known_peers: Arc::new(RwLock::new(HashMap::new())),
             peer_hostnames: Arc::new(RwLock::new(HashMap::new())),
             metrics,
+            peer_id_map: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -849,6 +853,12 @@ impl App {
             }
 
             LibP2pOverlayEvent::PeerConnected { peer_id, addr } => {
+                // Update peer_id_map for IPC peer addressing
+                {
+                    let id_u64 = libp2p_overlay::peer_id_to_u64(&peer_id);
+                    self.peer_id_map.write().await.insert(id_u64, peer_id);
+                }
+
                 // Only record the mapping if this peer's address matches a configured peer.
                 // Inbound connections from unconfigured peers must NOT be reconnect-eligible.
                 let clean_addr = strip_p2p_suffix(&addr);
@@ -870,6 +880,12 @@ impl App {
             }
 
             LibP2pOverlayEvent::PeerDisconnected { peer_id } => {
+                // Remove from peer_id_map
+                {
+                    let id_u64 = libp2p_overlay::peer_id_to_u64(&peer_id);
+                    self.peer_id_map.write().await.remove(&id_u64);
+                }
+
                 // Clean up any pending SCP state requests for this peer
                 {
                     let mut pending = self.pending_scp_state_requests.write().await;
@@ -947,10 +963,112 @@ impl App {
                     );
                 }
             }
+
+            LibP2pOverlayEvent::CompactTxSetReceived {
+                from,
+                raw_bytes,
+                resolved,
+            } => {
+                let peer_id_u64 = libp2p_overlay::peer_id_to_u64(&from);
+                info!(
+                    "COMPACT_EVENT: CompactTxSetReceived from {} ({} bytes, {} resolved entries)",
+                    from,
+                    raw_bytes.len(),
+                    resolved.len()
+                );
+
+                // Resolve short IDs against the mempool before forwarding to Core.
+                // The raw_bytes start with 4-byte XDR discriminant + CompactTransactionSet body.
+                // We need to extract (txSetHash, nonce, packed short IDs) for resolution.
+                let resolved_entries = if raw_bytes.len() >= 4 + 32 + 8 {
+                    let xdr_body = &raw_bytes[4..]; // skip XDR discriminant
+                    let tx_set_hash: [u8; 32] = xdr_body[0..32].try_into().unwrap();
+                    let nonce = u64::from_le_bytes(xdr_body[32..40].try_into().unwrap());
+
+                    // Extract all packed short IDs from the compact phases
+                    let all_short_ids =
+                        compact::extract_all_short_ids(&xdr_body[40..]);
+
+                    match all_short_ids {
+                        Ok(short_ids) => {
+                            // Resolve against the mempool
+                            let overlay_handle = &self.overlay_handle;
+                            compact::resolve_against_mempool(
+                                overlay_handle,
+                                &tx_set_hash,
+                                nonce,
+                                &short_ids,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            warn!("Failed to extract short IDs from compact tx set: {}", e);
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    warn!("CompactTxSetReceived raw_bytes too short for header");
+                    Vec::new()
+                };
+
+                // Send to Core via IPC
+                let resolved_refs: Vec<(u8, &[u8])> = resolved_entries
+                    .iter()
+                    .map(|(s, b)| (*s, b.as_slice()))
+                    .collect();
+
+                if let Err(e) = self.core_ipc.sender.send_compact_tx_set_received(
+                    peer_id_u64,
+                    &raw_bytes,
+                    &resolved_refs,
+                ) {
+                    warn!("Failed to send CompactTxSetReceived to Core: {}", e);
+                }
+            }
+
+            LibP2pOverlayEvent::GetCompactTxSetTxsReceived { from, raw_bytes } => {
+                let peer_id_u64 = libp2p_overlay::peer_id_to_u64(&from);
+                info!(
+                    "COMPACT_EVENT: GetCompactTxSetTxsReceived from {} ({} bytes)",
+                    from,
+                    raw_bytes.len()
+                );
+
+                if let Err(e) = self.core_ipc.sender.send_get_compact_tx_set_txs_received(
+                    peer_id_u64,
+                    &raw_bytes,
+                ) {
+                    warn!("Failed to send GetCompactTxSetTxsReceived to Core: {}", e);
+                }
+            }
+
+            LibP2pOverlayEvent::RefillForwarded {
+                from,
+                tx_set_hash,
+                nonce,
+                packed_short_ids,
+                envelope_array_bytes,
+            } => {
+                let peer_id_u64 = libp2p_overlay::peer_id_to_u64(&from);
+                info!(
+                    "COMPACT_EVENT: RefillForwarded from {} ({} short IDs, {} envelope bytes)",
+                    from,
+                    packed_short_ids.len() / 6,
+                    envelope_array_bytes.len()
+                );
+
+                if let Err(e) = self.core_ipc.sender.send_refill_forwarded(
+                    &tx_set_hash,
+                    nonce,
+                    peer_id_u64,
+                    &packed_short_ids,
+                    &envelope_array_bytes,
+                ) {
+                    warn!("Failed to send RefillForwarded to Core: {}", e);
+                }
+            }
         }
     }
-
-    /// Handle a message from Core. Returns false to signal shutdown.
     async fn handle_core_message(&mut self, msg: Message) -> bool {
         match msg.msg_type {
             MessageType::Shutdown => {
@@ -1394,6 +1512,51 @@ impl App {
                     Err(e) => {
                         error!("Failed to serialize metrics snapshot: {}", e);
                     }
+                }
+            }
+
+            MessageType::BroadcastDirect => {
+                // Payload: [StellarMessage XDR]
+                // Send to all peers on the compact stream
+                info!(
+                    "COMPACT_FROM_CORE: BroadcastDirect ({} bytes)",
+                    msg.payload.len()
+                );
+                let handle = self.libp2p_handle.clone();
+                let payload = msg.payload;
+                tokio::spawn(async move {
+                    handle.broadcast_direct(payload).await;
+                });
+            }
+
+            MessageType::SendToPeer => {
+                // Payload: [peerId:8][StellarMessage XDR]
+                if msg.payload.len() < 8 {
+                    warn!("SendToPeer payload too short: {} bytes", msg.payload.len());
+                    return true;
+                }
+                let peer_id_u64 = u64::from_le_bytes(msg.payload[0..8].try_into().unwrap());
+                let stellar_msg = msg.payload[8..].to_vec();
+
+                info!(
+                    "COMPACT_FROM_CORE: SendToPeer peer={} ({} bytes)",
+                    peer_id_u64,
+                    stellar_msg.len()
+                );
+
+                // Look up the PeerId from the u64 mapping
+                let peer_map = self.peer_id_map.read().await;
+                if let Some(peer_id) = peer_map.get(&peer_id_u64) {
+                    let handle = self.libp2p_handle.clone();
+                    let pid = peer_id.clone();
+                    tokio::spawn(async move {
+                        handle.send_to_peer(pid, stellar_msg).await;
+                    });
+                } else {
+                    warn!(
+                        "SendToPeer: unknown peer_id_u64={}, dropping message",
+                        peer_id_u64
+                    );
                 }
             }
 
