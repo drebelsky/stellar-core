@@ -1151,6 +1151,10 @@ HerderImpl::tryFinishCompactSession(Hash const& txSetHash, uint64_t nonce,
         }
 
         mReconstructedTxSetHashes.insert(txSetHash);
+
+        // Save values before erasing the session (invalidates reference)
+        auto const finalTxCount = session.totalTxCount;
+        auto const finalRefillRequested = session.refillRequested;
         mCompactSessions.erase(it);
 
         // Deliver to PendingEnvelopes. Use recvTxSet which checks
@@ -1166,8 +1170,8 @@ HerderImpl::tryFinishCompactSession(Hash const& txSetHash, uint64_t nonce,
                   "Reconstructed tx set {} from compact ({}ms, {} txs, "
                   "refill={})",
                   hexAbbrev(txSetHash), latencyMs,
-                  session.totalTxCount,
-                  session.refillRequested);
+                  finalTxCount,
+                  finalRefillRequested);
         break;
     }
     case ReconstructResult::Status::NEEDS_REFILL:

@@ -983,7 +983,7 @@ impl App {
                 let resolved_entries = if raw_bytes.len() >= 4 + 32 + 8 {
                     let xdr_body = &raw_bytes[4..]; // skip XDR discriminant
                     let tx_set_hash: [u8; 32] = xdr_body[0..32].try_into().unwrap();
-                    let nonce = u64::from_le_bytes(xdr_body[32..40].try_into().unwrap());
+                    let nonce = u64::from_be_bytes(xdr_body[32..40].try_into().unwrap());
 
                     // Extract all packed short IDs from the compact phases
                     let all_short_ids =
@@ -1019,7 +1019,7 @@ impl App {
 
                 if let Err(e) = self.core_ipc.sender.send_compact_tx_set_received(
                     peer_id_u64,
-                    &raw_bytes,
+                    &raw_bytes[4..], // strip XDR StellarMessage discriminant
                     &resolved_refs,
                 ) {
                     warn!("Failed to send CompactTxSetReceived to Core: {}", e);
@@ -1036,7 +1036,7 @@ impl App {
 
                 if let Err(e) = self.core_ipc.sender.send_get_compact_tx_set_txs_received(
                     peer_id_u64,
-                    &raw_bytes,
+                    &raw_bytes[4..], // strip XDR StellarMessage discriminant
                 ) {
                     warn!("Failed to send GetCompactTxSetTxsReceived to Core: {}", e);
                 }

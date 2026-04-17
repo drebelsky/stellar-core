@@ -1935,7 +1935,7 @@ async fn handle_inbound_compact_streams(mut incoming: IncomingStreams, state: Ar
                                 }
                                 let mut tx_set_hash = [0u8; 32];
                                 tx_set_hash.copy_from_slice(&xdr_body[0..32]);
-                                let nonce = u64::from_le_bytes(xdr_body[32..40].try_into().unwrap());
+                                let nonce = u64::from_be_bytes(xdr_body[32..40].try_into().unwrap());
                                 // XDR opaque<>: 4-byte BE length prefix
                                 let short_ids_len = u32::from_be_bytes(xdr_body[40..44].try_into().unwrap()) as usize;
 
@@ -1987,14 +1987,14 @@ async fn handle_inbound_compact_streams(mut incoming: IncomingStreams, state: Ar
     }
 }
 
-/// Convert a libp2p PeerId to a u64 for IPC (truncated hash).
+/// Convert a libp2p PeerId to a u64 for IPC using SipHash-2-4.
 pub fn peer_id_to_u64(peer_id: &PeerId) -> u64 {
-    let bytes = peer_id.to_bytes();
-    let mut hash = [0u8; 8];
-    for (i, b) in bytes.iter().enumerate() {
-        hash[i % 8] ^= b;
-    }
-    u64::from_le_bytes(hash)
+    use siphasher::sip::SipHasher24;
+    use std::hash::Hasher;
+    // Use a fixed key (we only need collision resistance, not secrecy)
+    let mut hasher = SipHasher24::new_with_keys(0x0706050403020100, 0x0f0e0d0c0b0a0908);
+    hasher.write(&peer_id.to_bytes());
+    hasher.finish()
 }
 
 /// INV/GETDATA housekeeping task.
