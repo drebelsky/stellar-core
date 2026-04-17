@@ -325,6 +325,17 @@ OverlayIPC::handleMessage(IPCMessage const& msg)
             std::memcpy(&count, msg.payload.data() + offset, 4);
             offset += 4;
 
+            // Sanity check: each entry is at least 5 bytes (1 status + 4 length).
+            size_t remaining = msg.payload.size() - offset;
+            if (count > remaining / 5)
+            {
+                CLOG_WARNING(
+                    Overlay,
+                    "COMPACT_TX_SET_RECEIVED count {} exceeds payload capacity",
+                    count);
+                break;
+            }
+
             std::vector<CompactResolveEntry> resolved;
             resolved.reserve(count);
             for (uint32_t i = 0; i < count; ++i)
@@ -357,6 +368,16 @@ OverlayIPC::handleMessage(IPCMessage const& msg)
                     offset += envLen;
                 }
                 resolved.push_back(std::move(entry));
+            }
+
+            if (resolved.size() != count)
+            {
+                CLOG_WARNING(
+                    Overlay,
+                    "COMPACT_TX_SET_RECEIVED parsed only {}/{} entries, "
+                    "dropping malformed message",
+                    resolved.size(), count);
+                break;
             }
 
             mOnCompactTxSetReceived(senderId, rawBytes, resolved);

@@ -680,8 +680,7 @@ TEST_CASE("compact tx set positional order preservation",
     auto originalBytes = xdr::xdr_to_opaque(originalXdr);
     auto reconstructedBytes = xdr::xdr_to_opaque(reconstructedXdr);
 
-    // The previousLedgerHash differs (reconstructor sets it to zero),
-    // but the content hash should match since content hash excludes it.
+    // Verify the reconstructed tx set matches the original content hash.
     REQUIRE(xdrSha256(reconstructedXdr) == frame->getContentsHash());
 }
 
