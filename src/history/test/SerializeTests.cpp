@@ -3,6 +3,8 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "history/HistoryArchive.h"
+#include "ledger/LedgerManager.h"
+#include "main/Application.h"
 #include "test/Catch2.h"
 #include "test/test.h"
 
@@ -40,4 +42,20 @@ TEST_CASE("Serialization round trip", "[history]")
             REQUIRE(hasString == hasLoad.toString());
         }
     }
+}
+
+TEST_CASE("tmp")
+{
+    Config cfg;
+    cfg.load("stellar-core.cfg");
+    VirtualClock clock{VirtualClock::REAL_TIME};
+    Application::pointer app = Application::create(clock, cfg, false);
+    auto& lm = app->getLedgerManager();
+    auto start = std::chrono::steady_clock::now();
+    lm.loadLastKnownLedger();
+    auto end = std::chrono::steady_clock::now();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+            .count();
+    LOG_FATAL(DEFAULT_LOG, "Loaded last known ledger in {} ms", duration);
 }
