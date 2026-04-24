@@ -802,6 +802,7 @@ BucketListBase<BucketT>::restartMerges(Application& app,
                                        uint32_t maxProtocolVersion,
                                        uint32_t ledger)
 {
+    return;
     ZoneScoped;
     for (uint32_t i = 0; i < static_cast<uint32>(mLevels.size()); i++)
     {
