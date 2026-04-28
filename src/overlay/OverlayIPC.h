@@ -195,6 +195,20 @@ class OverlayIPC
     bool broadcastDirect(StellarMessage const& msg);
 
     /**
+     * Broadcast an SCP envelope bundled with a compact tx set.
+     *
+     * The Rust overlay will send the compact tx set frame first, then the
+     * SCP envelope frame, on the SCP stream — guaranteeing that the
+     * compact data arrives before the SCP message that references it.
+     *
+     * @param envelope The SCP envelope to broadcast
+     * @param compact The compact tx set StellarMessage to send first
+     * @return true if sent successfully
+     */
+    bool broadcastSCPWithCompact(SCPEnvelope const& envelope,
+                                 StellarMessage const& compact);
+
+    /**
      * Send a StellarMessage to exactly one peer.
      *
      * Used for GET_COMPACT_TX_SET_TXS (refill request) and

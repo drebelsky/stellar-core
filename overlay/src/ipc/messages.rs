@@ -64,6 +64,11 @@ pub enum MessageType {
     /// Payload: [peerId:8][StellarMessage XDR]
     SendToPeer = 15,
 
+    /// Broadcast an SCP envelope bundled with a compact tx set on the SCP stream.
+    /// Compact is sent first, then SCP, guaranteeing ordering.
+    /// Payload: [compactLen:4][StellarMessage XDR (compact)][SCPEnvelope XDR]
+    BroadcastScpWithCompact = 16,
+
     // ═══ Overlay → Core (Critical Path) ═══
     /// Received SCP envelope from network
     ScpReceived = 100,
@@ -127,6 +132,7 @@ impl TryFrom<u32> for MessageType {
             13 => Ok(MessageType::RequestOverlayMetrics),
             14 => Ok(MessageType::BroadcastDirect),
             15 => Ok(MessageType::SendToPeer),
+            16 => Ok(MessageType::BroadcastScpWithCompact),
             100 => Ok(MessageType::ScpReceived),
             101 => Ok(MessageType::TopTxsResponse),
             102 => Ok(MessageType::PeerRequestsScpState),

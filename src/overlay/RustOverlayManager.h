@@ -63,6 +63,10 @@ class RustOverlayManager
     // Broadcast a StellarMessage to all peers (no relay)
     bool broadcastDirect(StellarMessage const& msg);
 
+    // Broadcast SCP envelope bundled with compact tx set on SCP stream
+    bool broadcastSCPWithCompact(SCPEnvelope const& envelope,
+                                 StellarMessage const& compact);
+
     // Send a StellarMessage to exactly one peer
     bool sendToPeer(uint64_t peerId, StellarMessage const& msg);
 

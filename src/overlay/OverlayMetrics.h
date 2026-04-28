@@ -95,5 +95,6 @@ struct OverlayMetrics
     medida::Counter& mCompactTxSetRedundantReceivedCount;
     medida::Counter& mCompactTxSetRedundantBytesReceivedTotal;
     medida::Counter& mCompactTxSetSendSkippedPerPeerDedupCount;
+    medida::Counter& mCompactTxSetFullFetchUsedCount;
 };
 }

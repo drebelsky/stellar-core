@@ -799,6 +799,36 @@ OverlayIPC::broadcastDirect(StellarMessage const& msg)
 }
 
 bool
+OverlayIPC::broadcastSCPWithCompact(SCPEnvelope const& envelope,
+                                    StellarMessage const& compact)
+{
+    if (!mChannel || !mChannel->isConnected())
+    {
+        CLOG_WARNING(Overlay,
+                     "Cannot broadcastSCPWithCompact: not connected to overlay");
+        return false;
+    }
+
+    auto compactBytes = xdr::xdr_to_opaque(compact);
+    auto scpBytes = xdr::xdr_to_opaque(envelope);
+
+    // Payload: [compactLen:4][compact XDR][SCP XDR]
+    uint32_t compactLen = static_cast<uint32_t>(compactBytes.size());
+
+    IPCMessage ipcMsg;
+    ipcMsg.type = IPCMessageType::BROADCAST_SCP_WITH_COMPACT;
+    ipcMsg.payload.resize(4 + compactBytes.size() + scpBytes.size());
+    std::memcpy(ipcMsg.payload.data(), &compactLen, 4);
+    std::memcpy(ipcMsg.payload.data() + 4, compactBytes.data(),
+                compactBytes.size());
+    std::memcpy(ipcMsg.payload.data() + 4 + compactBytes.size(),
+                scpBytes.data(), scpBytes.size());
+
+    std::lock_guard<std::mutex> lock(mSendMutex);
+    return mChannel->send(ipcMsg);
+}
+
+bool
 OverlayIPC::sendToPeer(uint64_t peerId, StellarMessage const& msg)
 {
     if (!mChannel || !mChannel->isConnected())

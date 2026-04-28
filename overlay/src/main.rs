@@ -1096,6 +1096,36 @@ impl App {
                 });
             }
 
+            MessageType::BroadcastScpWithCompact => {
+                // Bundled: compact tx set + SCP envelope on the SCP stream.
+                // Payload: [compactLen:4][compact XDR][SCP XDR]
+                if msg.payload.len() < 4 {
+                    warn!("BroadcastScpWithCompact payload too short: {} bytes", msg.payload.len());
+                    return true;
+                }
+                let compact_len = u32::from_le_bytes(msg.payload[0..4].try_into().unwrap()) as usize;
+                if msg.payload.len() < 4 + compact_len {
+                    warn!(
+                        "BroadcastScpWithCompact compact truncated: need {} but have {}",
+                        4 + compact_len,
+                        msg.payload.len()
+                    );
+                    return true;
+                }
+                let compact = msg.payload[4..4 + compact_len].to_vec();
+                let scp = msg.payload[4 + compact_len..].to_vec();
+
+                info!(
+                    "SCP_WITH_COMPACT_FROM_CORE: compact={} bytes, scp={} bytes",
+                    compact.len(),
+                    scp.len()
+                );
+                let handle = self.libp2p_handle.clone();
+                tokio::spawn(async move {
+                    handle.broadcast_scp_with_compact(compact, scp).await;
+                });
+            }
+
             MessageType::GetTopTxs => {
                 // Parse payload: [count:4]
                 if msg.payload.len() < 4 {

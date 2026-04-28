@@ -18,6 +18,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -259,9 +260,11 @@ class HerderImpl : public Herder
     void outOfSyncRecovery();
     void broadcast(SCPEnvelope const& e);
 
-    // Compact tx set relay: attempt to send a compact tx set alongside
-    // an SCP envelope, subject to config flags and per-peer dedup.
-    void maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e);
+    // Compact tx set relay: attempt to build a compact tx set for an SCP
+    // envelope, subject to config flags and per-peer dedup.
+    // Returns the compact StellarMessage if one was built successfully.
+    std::optional<StellarMessage>
+    maybeBuildCompactTxSetForEnvelope(SCPEnvelope const& e);
 
     // Try to reconstruct a compact session and deliver to PendingEnvelopes
     // if complete, or request refill / fallback as needed.

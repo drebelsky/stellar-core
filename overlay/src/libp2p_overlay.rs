@@ -115,6 +115,9 @@ pub enum OverlayCommand {
     SendScpToPeer { peer_id: PeerId, envelope: Vec<u8> },
     /// Broadcast a message to all peers (no relay) — used for compact tx set
     BroadcastDirect(Vec<u8>),
+    /// Broadcast SCP envelope bundled with compact tx set on SCP stream.
+    /// Compact is sent first, then SCP, guaranteeing ordering.
+    BroadcastScpWithCompact { compact: Vec<u8>, scp: Vec<u8> },
     /// Send a message to a specific peer — used for compact refill req/resp
     SendToPeer { peer_id: PeerId, message: Vec<u8> },
     /// Shutdown
@@ -259,6 +262,19 @@ impl OverlayHandle {
     pub async fn broadcast_direct(&self, message: Vec<u8>) {
         if let Err(e) = self.cmd_tx.send(OverlayCommand::BroadcastDirect(message)).await {
             warn!("Overlay command channel closed, failed to send BroadcastDirect: {}", e);
+        }
+    }
+
+    /// Broadcast SCP envelope bundled with compact tx set on the SCP stream.
+    /// Compact is written first, then SCP, guaranteeing the receiver sees
+    /// the compact tx set before the SCP message that references its hash.
+    pub async fn broadcast_scp_with_compact(&self, compact: Vec<u8>, scp: Vec<u8>) {
+        if let Err(e) = self
+            .cmd_tx
+            .send(OverlayCommand::BroadcastScpWithCompact { compact, scp })
+            .await
+        {
+            warn!("Overlay command channel closed, failed to send BroadcastScpWithCompact: {}", e);
         }
     }
 
@@ -608,6 +624,9 @@ impl StellarOverlay {
                                 });
                             }
                         }
+                        OverlayCommand::BroadcastScpWithCompact { compact, scp } => {
+                            self.broadcast_scp_with_compact(&compact, &scp).await;
+                        }
                         OverlayCommand::SendToPeer { peer_id, message } => {
                             let state = Arc::clone(&self.state);
                             tokio::spawn(async move {
@@ -842,6 +861,89 @@ impl StellarOverlay {
                             &hash[..4],
                             peer_id,
                             e
+                        );
+                    }
+                }
+            });
+        }
+    }
+
+    /// Broadcast SCP envelope bundled with compact tx set to all connected peers.
+    /// For each peer, writes the compact frame first then the SCP frame on the
+    /// SCP stream while holding the stream mutex, guaranteeing ordering.
+    async fn broadcast_scp_with_compact(&mut self, compact: &[u8], scp_envelope: &[u8]) {
+        let hash = blake2b_hash(scp_envelope);
+
+        // Mark as seen for inbound dedup
+        {
+            let mut seen = self.state.scp_seen.write().await;
+            seen.put(hash, ());
+        }
+
+        // Determine which peers still need this message
+        let streams = self.state.peer_streams.read().await;
+        let all_peers: Vec<_> = streams.keys().cloned().collect();
+        drop(streams);
+
+        let peers_to_send: Vec<PeerId>;
+        {
+            let mut sent_to = self.state.scp_sent_to.write().await;
+            let already_sent: HashSet<PeerId> = sent_to.peek(&hash)
+                .cloned()
+                .unwrap_or_default();
+
+            peers_to_send = all_peers
+                .into_iter()
+                .filter(|p| !already_sent.contains(p))
+                .collect();
+
+            if peers_to_send.is_empty() {
+                trace!(
+                    "SCP_WITH_COMPACT_SKIP: SCP {:02x?}... already sent to all connected peers",
+                    &hash[..4]
+                );
+                return;
+            }
+
+            let mut new_sent = already_sent;
+            new_sent.extend(peers_to_send.iter().cloned());
+            sent_to.put(hash, new_sent);
+        }
+
+        info!(
+            "SCP_WITH_COMPACT_BROADCAST: SCP {:02x?}... ({} + {} bytes) to {} peers",
+            &hash[..4],
+            compact.len(),
+            scp_envelope.len(),
+            peers_to_send.len()
+        );
+        self.state.metrics.message_broadcast.fetch_add(1, Ordering::Relaxed);
+
+        for peer_id in peers_to_send {
+            let state = Arc::clone(&self.state);
+            let compact = compact.to_vec();
+            let scp = scp_envelope.to_vec();
+            tokio::spawn(async move {
+                match send_pair_to_peer_scp_stream(&state, peer_id.clone(), &compact, &scp).await {
+                    Ok(_) => {
+                        // Count as 2 messages written (compact + SCP)
+                        state.metrics.send_scp_message.fetch_add(1, Ordering::Relaxed);
+                        state.metrics.message_write.fetch_add(2, Ordering::Relaxed);
+                        state.metrics.byte_write.fetch_add(
+                            (compact.len() + scp.len()) as u64,
+                            Ordering::Relaxed,
+                        );
+                        debug!(
+                            "SCP_WITH_COMPACT_OK: Sent compact+SCP {:02x?}... to {}",
+                            &hash[..4],
+                            peer_id
+                        );
+                    }
+                    Err(e) => {
+                        state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
+                        warn!(
+                            "SCP_WITH_COMPACT_FAIL: Failed to send to {}: {}",
+                            peer_id, e
                         );
                     }
                 }
@@ -1348,6 +1450,45 @@ async fn write_framed(stream: &mut Stream, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Atomically write two frames (compact then SCP) to a peer's SCP stream.
+/// Holds the SCP stream mutex for both writes, guaranteeing ordering.
+async fn send_pair_to_peer_scp_stream(
+    state: &SharedState,
+    peer_id: PeerId,
+    first: &[u8],
+    second: &[u8],
+) -> io::Result<()> {
+    let streams = state.peer_streams.read().await;
+    let peer_streams = streams
+        .get(&peer_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "peer not connected"))?
+        .clone();
+    drop(streams);
+
+    let mut stream_guard = peer_streams.scp.lock().await;
+
+    // Reopen if needed
+    if stream_guard.is_none() {
+        match state.control.clone().open_stream(peer_id, StreamType::Scp.protocol()).await {
+            Ok(s) => {
+                *stream_guard = Some(s);
+            }
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    format!("failed to open SCP stream: {:?}", e),
+                ));
+            }
+        }
+    }
+
+    let stream = stream_guard.as_mut().unwrap();
+    // Write both frames while holding the lock
+    write_framed(stream, first).await?;
+    write_framed(stream, second).await?;
+    Ok(())
+}
+
 /// Flush INV batch for a specific peer
 async fn flush_inv_batch_to_peer(state: &Arc<SharedState>, peer: PeerId) {
     let batch = {
@@ -1412,14 +1553,14 @@ async fn handle_inbound_scp_streams(mut incoming: IncomingStreams, state: Arc<Sh
         tokio::spawn(async move {
             loop {
                 match read_framed(&mut stream).await {
-                    Ok(envelope) => {
+                    Ok(payload) => {
                         state.metrics.message_read.fetch_add(1, Ordering::Relaxed);
-                        state.metrics.byte_read.fetch_add(envelope.len() as u64, Ordering::Relaxed);
+                        state.metrics.byte_read.fetch_add(payload.len() as u64, Ordering::Relaxed);
 
                         // Check if this is an SCP state request (small message, 4 bytes)
-                        if envelope.len() == 4 {
+                        if payload.len() == 4 {
                             // This is an SCP state request (ledger seq)
-                            let ledger_seq = u32::from_le_bytes(envelope[..4].try_into().unwrap());
+                            let ledger_seq = u32::from_le_bytes(payload[..4].try_into().unwrap());
                             info!(
                                 "SCP_STATE_REQ: Peer {} requests SCP state for ledger >= {}",
                                 peer_id, ledger_seq
@@ -1435,7 +1576,44 @@ async fn handle_inbound_scp_streams(mut incoming: IncomingStreams, state: Arc<Sh
                             continue;
                         }
 
-                        let hash = blake2b_hash(&envelope);
+                        // Discriminate between SCPEnvelope and StellarMessage (compact tx set).
+                        // SCPEnvelope XDR starts with nodeID (PublicKeyType = 0, 4 zero bytes).
+                        // StellarMessage XDR starts with MessageType discriminant (non-zero).
+                        let discriminant = if payload.len() >= 4 {
+                            u32::from_be_bytes(payload[0..4].try_into().unwrap())
+                        } else {
+                            0
+                        };
+
+                        if discriminant != 0 {
+                            // This is a StellarMessage on the SCP stream (compact tx set).
+                            // Route to the same handling as the compact stream.
+                            if discriminant == XDR_MSG_TYPE_COMPACT_TX_SET {
+                                info!(
+                                    "SCP_STREAM_COMPACT: COMPACT_TX_SET ({} bytes) from {}",
+                                    payload.len(),
+                                    peer_id
+                                );
+                                if let Err(e) = state.event_tx.send(OverlayEvent::CompactTxSetReceived {
+                                    from: peer_id.clone(),
+                                    raw_bytes: payload,
+                                    resolved: Vec::new(),
+                                }) {
+                                    warn!("Failed to forward CompactTxSetReceived from SCP stream: {}", e);
+                                }
+                            } else {
+                                warn!(
+                                    "SCP_STREAM_UNKNOWN: Unknown message type {} ({} bytes) from {} on SCP stream",
+                                    discriminant,
+                                    payload.len(),
+                                    peer_id
+                                );
+                            }
+                            continue;
+                        }
+
+                        // This is an SCP envelope (discriminant == 0 means PublicKeyType)
+                        let hash = blake2b_hash(&payload);
                         let recv_start = std::time::Instant::now();
                         let is_dup = {
                             let mut seen = state.scp_seen.write().await;
@@ -1471,13 +1649,13 @@ async fn handle_inbound_scp_streams(mut incoming: IncomingStreams, state: Arc<Sh
                         info!(
                             "SCP_RECV: Received SCP {:02x?}... ({} bytes) from {}",
                             &hash[..4],
-                            envelope.len(),
+                            payload.len(),
                             peer_id
                         );
 
                         // Forward to Core
                         if let Err(e) = state.event_tx.send(OverlayEvent::ScpReceived {
-                            envelope,
+                            envelope: payload,
                             from: peer_id.clone(),
                         }) {
                             warn!("Failed to forward SCP event from {}: {}", peer_id, e);

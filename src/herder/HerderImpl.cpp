@@ -567,21 +567,30 @@ HerderImpl::broadcast(SCPEnvelope const& e)
 
         mSCPMetrics.mEnvelopeEmit.Mark();
 
-        // Route through overlay (RustOverlayManager handles IPC to Rust
-        // overlay, OverlayManagerImpl handles built-in overlay in standalone
-        // mode)
-        auto m = std::make_shared<StellarMessage>();
-        m->type(SCP_MESSAGE);
-        m->envelope() = e;
-        mApp.getOverlayManager().broadcastMessage(m);
+        auto& overlayMgr = mApp.getOverlayManager();
 
-        // Attempt to send compact tx set alongside the SCP envelope.
-        maybeBroadcastCompactTxSetForEnvelope(e);
+        // Try to build a compact tx set to bundle with the SCP envelope.
+        auto compactMsg = maybeBuildCompactTxSetForEnvelope(e);
+
+        if (compactMsg)
+        {
+            // Send compact tx set + SCP envelope bundled on the SCP stream.
+            // Rust overlay writes compact first, guaranteeing ordering.
+            overlayMgr.broadcastSCPWithCompact(e, *compactMsg);
+        }
+        else
+        {
+            // No compact tx set available — send SCP envelope only.
+            auto m = std::make_shared<StellarMessage>();
+            m->type(SCP_MESSAGE);
+            m->envelope() = e;
+            overlayMgr.broadcastMessage(m);
+        }
     }
 }
 
-void
-HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
+std::optional<StellarMessage>
+HerderImpl::maybeBuildCompactTxSetForEnvelope(SCPEnvelope const& e)
 {
     auto const& cfg = mApp.getConfig();
 
@@ -600,30 +609,32 @@ HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
     if (isNomination)
     {
         if (isOwnEnvelope && !cfg.COMPACT_TX_SET_LEADER_NOMINATION)
-            return;
+            return std::nullopt;
         if (!isOwnEnvelope && !cfg.COMPACT_TX_SET_NON_LEADER_NOMINATION)
-            return;
+            return std::nullopt;
     }
     else if (isBallot)
     {
         if (!cfg.COMPACT_TX_SET_BALLOT_ROUNDS)
-            return;
+            return std::nullopt;
     }
     else
     {
-        return;
+        return std::nullopt;
     }
 
     // Extract tx set hashes from the envelope
     auto txSetHashes = getTxSetHashes(e);
     if (!txSetHashes)
     {
-        return;
+        return std::nullopt;
     }
 
     auto& overlayMgr = mApp.getOverlayManager();
     auto& metrics = overlayMgr.getOverlayMetrics();
 
+    // Build and return a compact tx set for the first eligible hash.
+    // Typically an envelope references exactly one tx set hash.
     for (auto const& txSetHash : *txSetHashes)
     {
         // Per-peer dedup (broadcast-level): skip if we already sent
@@ -654,13 +665,12 @@ HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
                 continue;
             }
 
-            overlayMgr.broadcastDirect(compactMsg);
             mCompactTxSetBroadcastDedup.insert(txSetHash);
             metrics.mCompactTxSetSentCount.inc();
             metrics.mCompactTxSetBytesSentTotal.inc(
                 static_cast<int64_t>(
                     cachedIt->second.serializedBytes.size()));
-            continue;
+            return compactMsg;
         }
 
         // Try to build the compact tx set from the full tx set
@@ -692,7 +702,6 @@ HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
         cached.serializedBytes = xdr::xdr_to_opaque(compactMsg);
         mCachedCompactTxSets[txSetHash] = std::move(cached);
 
-        overlayMgr.broadcastDirect(compactMsg);
         mCompactTxSetBroadcastDedup.insert(txSetHash);
         metrics.mCompactTxSetSentCount.inc();
         metrics.mCompactTxSetBytesSentTotal.inc(
@@ -700,11 +709,14 @@ HerderImpl::maybeBroadcastCompactTxSetForEnvelope(SCPEnvelope const& e)
                 mCachedCompactTxSets[txSetHash].serializedBytes.size()));
 
         CLOG_DEBUG(Herder,
-                   "Broadcast compact tx set for hash {} (nonce={}, "
+                   "Built compact tx set for hash {} (nonce={}, "
                    "{} txs)",
                    hexAbbrev(txSetHash), nonce,
                    fullTxSet->sizeTxTotal());
+        return compactMsg;
     }
+
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------

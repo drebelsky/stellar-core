@@ -83,6 +83,12 @@ enum class IPCMessageType : uint32_t
     /// Payload: [peerId:8][StellarMessage XDR]
     SEND_TO_PEER = 15,
 
+    /// Broadcast an SCP envelope bundled with a compact tx set.
+    /// The Rust overlay sends the compact tx set frame first, then the SCP
+    /// envelope frame, on the SCP stream — guaranteeing ordering.
+    /// Payload: [compactLen:4][StellarMessage XDR (compact)][SCPEnvelope XDR]
+    BROADCAST_SCP_WITH_COMPACT = 16,
+
     // ═══ Overlay → Core (Critical Path) ═══
 
     /// Received SCP envelope from network

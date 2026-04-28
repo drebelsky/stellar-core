@@ -82,7 +82,11 @@ RustOverlayManager::start()
             auto frame = TxSetXDRFrame::makeFromWire(txSet);
             mApp.postOnMainThread(
                 [this, hash, frame]() {
-                    mApp.getHerder().recvTxSet(hash, frame);
+                    if (mApp.getHerder().recvTxSet(hash, frame))
+                    {
+                        // Full fetch delivered this tx set (old flow was used)
+                        mOverlayMetrics.mCompactTxSetFullFetchUsedCount.inc();
+                    }
                 },
                 "RustOverlayManager: TxSetReceived");
         });
@@ -279,6 +283,17 @@ RustOverlayManager::broadcastDirect(StellarMessage const& msg)
     if (mOverlayIPC && !mShuttingDown)
     {
         return mOverlayIPC->broadcastDirect(msg);
+    }
+    return false;
+}
+
+bool
+RustOverlayManager::broadcastSCPWithCompact(SCPEnvelope const& envelope,
+                                            StellarMessage const& compact)
+{
+    if (mOverlayIPC && !mShuttingDown)
+    {
+        return mOverlayIPC->broadcastSCPWithCompact(envelope, compact);
     }
     return false;
 }

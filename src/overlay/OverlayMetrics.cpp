@@ -108,6 +108,8 @@ OverlayMetrics::OverlayMetrics(Application& app)
           {"compact-txset", "redundant-bytes-received", "total"}))
     , mCompactTxSetSendSkippedPerPeerDedupCount(app.getMetrics().NewCounter(
           {"compact-txset", "send-skipped-per-peer-dedup", "count"}))
+    , mCompactTxSetFullFetchUsedCount(app.getMetrics().NewCounter(
+          {"compact-txset", "full-fetch-used", "count"}))
 {
 }
 }
