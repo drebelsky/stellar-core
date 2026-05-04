@@ -3,8 +3,10 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "lib/catch.hpp"
+#include "main/Config.h"
 #include "overlay/IPC.h"
 #include "overlay/OverlayIPC.h"
+#include "test/test.h"
 #include "util/Logging.h"
 #include "util/TmpDir.h"
 
@@ -135,7 +137,7 @@ TEST_CASE("IPC payload size benchmark", "[overlay-ipc-rust][.][benchmark]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
 
     // Start the Rust overlay process
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
     ipc.start();
 
     // Wait for connection
@@ -263,7 +265,7 @@ TEST_CASE("IPC concurrent access benchmark", "[overlay-ipc-rust][.][benchmark]")
     TmpDir tmpDir("ipc-benchmark");
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
 
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
     ipc.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     REQUIRE(ipc.isConnected());

@@ -249,6 +249,15 @@ pub fn compute_tx_hash(data: &[u8]) -> TxHash {
     hash
 }
 
+/// 32-byte Blake2b hash, used as the canonical transaction-id throughout the
+/// overlay (TxBuffer keys, INV/GETDATA dedup, SCP envelope dedup, and the
+/// compact tx set protocol's SipHash inputs).
+pub fn blake2b_hash(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

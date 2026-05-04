@@ -3,8 +3,10 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "lib/catch.hpp"
+#include "main/Config.h"
 #include "overlay/IPC.h"
 #include "overlay/OverlayIPC.h"
+#include "test/test.h"
 #include "util/TmpDir.h"
 #include "xdr/Stellar-SCP.h"
 #include "xdr/Stellar-overlay.h"
@@ -94,7 +96,7 @@ TEST_CASE("OverlayIPC connects to Rust overlay", "[overlay-ipc-rust][.]")
     TmpDir tmpDir("overlay-ipc-test");
     std::string socketPath = getAbsoluteSocketPath(tmpDir);
 
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
 
     SECTION("start and connect")
     {
@@ -115,7 +117,7 @@ TEST_CASE("OverlayIPC broadcasts SCP to Rust overlay", "[overlay-ipc][.]")
     TmpDir tmpDir("overlay-ipc-broadcast-test");
     std::string socketPath = getAbsoluteSocketPath(tmpDir);
 
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
     REQUIRE(ipc.start());
 
     SECTION("broadcast SCP envelope")
@@ -149,7 +151,7 @@ TEST_CASE("OverlayIPC receives SCP from Rust overlay", "[overlay-ipc][.]")
     TmpDir tmpDir("overlay-ipc-receive-test");
     std::string socketPath = getAbsoluteSocketPath(tmpDir);
 
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
 
     std::atomic<int> receivedCount{0};
     ipc.setOnSCPReceived([&](SCPEnvelope const& env) { ++receivedCount; });
@@ -177,7 +179,7 @@ TEST_CASE("OverlayIPC ledger close notification", "[overlay-ipc][.]")
     TmpDir tmpDir("overlay-ipc-ledger-test");
     std::string socketPath = getAbsoluteSocketPath(tmpDir);
 
-    OverlayIPC ipc(socketPath, overlayBinary, 11625);
+    OverlayIPC ipc(socketPath, overlayBinary, 11625, getTestConfig());
     REQUIRE(ipc.start());
 
     SECTION("notify ledger closed")
@@ -217,8 +219,8 @@ TEST_CASE("Two Cores communicate via Rust overlays", "[overlay-ipc][.]")
     // For now, we skip the actual connectivity test and just verify
     // the IPC mechanism works independently.
 
-    OverlayIPC ipcA(socketPathA, overlayBinary, 11626);
-    OverlayIPC ipcB(socketPathB, overlayBinary, 11627);
+    OverlayIPC ipcA(socketPathA, overlayBinary, 11626, getTestConfig(0));
+    OverlayIPC ipcB(socketPathB, overlayBinary, 11627, getTestConfig(1));
 
     REQUIRE(ipcA.start());
     REQUIRE(ipcB.start());
@@ -362,7 +364,7 @@ TEST_CASE("Rust overlay get top transactions", "[overlay-ipc][.]")
     uint16_t peerPort = 11625;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Get top transactions from empty mempool
@@ -397,7 +399,7 @@ TEST_CASE("Rust overlay TX submission", "[overlay-ipc][.]")
     uint16_t peerPort = 11626;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Create a minimal valid TransactionEnvelope
@@ -487,7 +489,7 @@ TEST_CASE("Rust overlay TX inclusion", "[overlay-ipc][.]")
     uint16_t peerPort = 11627;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Submit TXs with different fees
@@ -538,7 +540,7 @@ TEST_CASE("Rust overlay TX fee per op inclusion", "[overlay-ipc][.]")
     uint16_t peerPort = 11628;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // TX1: 200 fee / 2 ops = 100 per op
@@ -588,7 +590,7 @@ TEST_CASE("Rust overlay mempool eviction", "[overlay-ipc][.]")
     uint16_t peerPort = 11629;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Submit many low-fee TXs first
@@ -648,7 +650,7 @@ TEST_CASE("Rust overlay TX deduplication", "[overlay-ipc][.]")
     uint16_t peerPort = 11630;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Submit the same TX twice
@@ -688,7 +690,7 @@ TEST_CASE("Rust overlay mempool clear on externalize", "[overlay-ipc][.]")
     uint16_t peerPort = 11631;
 
     auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort);
+        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, getTestConfig());
     REQUIRE(ipc->start());
 
     // Submit a TX
@@ -752,9 +754,9 @@ TEST_CASE("Rust overlay TX flooding between peers", "[overlay-ipc][.]")
     uint16_t peerPortB = 11641;
 
     auto ipcA =
-        std::make_unique<OverlayIPC>(socketPathA, overlayBinary, peerPortA);
+        std::make_unique<OverlayIPC>(socketPathA, overlayBinary, peerPortA, getTestConfig(0));
     auto ipcB =
-        std::make_unique<OverlayIPC>(socketPathB, overlayBinary, peerPortB);
+        std::make_unique<OverlayIPC>(socketPathB, overlayBinary, peerPortB, getTestConfig(1));
 
     REQUIRE(ipcA->start());
     REQUIRE(ipcB->start());

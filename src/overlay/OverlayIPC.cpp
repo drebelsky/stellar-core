@@ -5,6 +5,7 @@
 #include "overlay/OverlayIPC.h"
 #include "crypto/Hex.h"
 #include "herder/HerderUtils.h"
+#include "util/HashOfHash.h"
 #include "util/Logging.h"
 #include "util/types.h"
 #include "xdr/Stellar-ledger.h"
@@ -340,7 +341,6 @@ OverlayIPC::broadcastSCP(SCPEnvelope const& envelope)
                 "nomination");
             for (auto const& sv : values.value())
             {
-                txSetHashes.insert(sv.txSetHash);
                 assertMessage(sv.ext.v() == STELLAR_VALUE_SIGNED,
                               "Expected signed StellarValue in nomination");
                 if (sv.ext.lcValueSignature().nodeID == mNodePublicKey)
@@ -365,7 +365,7 @@ OverlayIPC::broadcastSCP(SCPEnvelope const& envelope)
             assertMessage(hashes.has_value(),
                           "Failed to extract TX set hashes from SCP envelope");
             std::copy(hashes->begin(), hashes->end(),
-                      std::back_inserter(txSetHashes));
+                      std::inserter(txSetHashes, txSetHashes.end()));
         }
     }
 
@@ -391,6 +391,7 @@ OverlayIPC::broadcastSCP(SCPEnvelope const& envelope)
         msg.payload = xdr::xdr_to_opaque(envelope);
     }
 
+    std::lock_guard<std::mutex> lock(mSendMutex);
     return mChannel->send(msg);
 #undef assertMessage
 }

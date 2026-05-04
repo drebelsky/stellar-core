@@ -16,7 +16,7 @@ pub use inv_messages::{
     INV_BATCH_MAX_SIZE,
 };
 pub use inv_tracker::{InvTracker, INV_TRACKER_CAPACITY};
-pub use mempool::{compute_tx_hash, Mempool, TxEntry, TxHash};
+pub use mempool::{blake2b_hash, compute_tx_hash, Mempool, TxEntry, TxHash};
 pub use pending_requests::{
     PendingRequest, PendingRequests, GETDATA_PEER_TIMEOUT, GETDATA_TOTAL_TIMEOUT,
 };

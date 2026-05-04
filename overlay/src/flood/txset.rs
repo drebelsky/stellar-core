@@ -3,7 +3,7 @@
 //! Builds GeneralizedTransactionSet XDR from mempool transactions.
 //! Uses CLASSIC phase only for MVP. TODO: Add SOROBAN phase support.
 
-use crate::flood::compute_tx_hash;
+use crate::flood::blake2b_hash;
 use sha2::{Digest, Sha256};
 use siphasher::sip::SipHasher24;
 use std::collections::HashMap;
@@ -36,6 +36,11 @@ pub struct CachedTxSet {
     pub base_fee: Option<i64>,
     /// Eagerly built serialized stellar_xdr::CompactTxSet for this set
     pub compact_xdr: Vec<u8>,
+    /// Per-tx already-serialized TransactionEnvelope XDR, in flat CLASSIC
+    /// order (matches the indices used in CompactTxSet.txs). Populated at
+    /// insert time so peer GET_TXS responses don't need to re-parse the
+    /// cached GeneralizedTransactionSet on every request.
+    pub tx_envelopes_xdr: Vec<Vec<u8>>,
 }
 
 /// TX set cache - stores built TX sets by hash for retrieval.
@@ -194,6 +199,7 @@ impl CachedTxSet {
         let previous_ledger_hash: Hash256 = txset.previous_ledger_hash.0;
 
         let mut tx_hashes = Vec::new();
+        let mut tx_envelopes_xdr: Vec<Vec<u8>> = Vec::new();
         let mut base_fee: Option<i64> = None;
 
         for phase in txset.phases.iter() {
@@ -209,7 +215,8 @@ impl CachedTxSet {
                         let tx_xdr = tx
                             .to_xdr(Limits::none())
                             .expect("Failed to convert TxEnvelope to XDR");
-                        tx_hashes.push(compute_tx_hash(&tx_xdr));
+                        tx_hashes.push(blake2b_hash(&tx_xdr));
+                        tx_envelopes_xdr.push(tx_xdr);
                     }
                 }
                 TransactionPhase::V1(parallel) => {
@@ -231,6 +238,7 @@ impl CachedTxSet {
             previous_ledger_hash,
             base_fee,
             compact_xdr,
+            tx_envelopes_xdr,
         }
     }
 }
@@ -341,10 +349,17 @@ pub enum ReconstructResult {
     /// XDR re-hashes to `compact.tx_set_hash`. Caller can forward these
     /// bytes via `TX_SET_AVAILABLE`.
     Complete(Vec<u8>),
-    /// One or more digests didn't match any known tx. Indices are positions
+    /// One or more digests didn't match any known tx. `indices` are positions
     /// within `compact.txs` (0-based, in the order the compact set lists
-    /// them). Caller should request these via `COMPACT_TX_SET_GET_TXS`.
-    Missing { indices: Vec<u32> },
+    /// them) for the slots that didn't match — caller should request these
+    /// via `COMPACT_TX_SET_GET_TXS`. `matched` is the per-slot vector with
+    /// `Some(envelope_xdr)` for already-resolved slots and `None` for the
+    /// missing ones; the caller can stash it as the start of a pending
+    /// reconstruction.
+    Missing {
+        indices: Vec<u32>,
+        matched: Vec<Option<Vec<u8>>>,
+    },
     /// All digests matched a known tx, but the resulting XDR hashes to a
     /// different value than `compact.tx_set_hash` — the digest space is too
     /// small (6 bytes) and a collision led us to pick the wrong tx.
@@ -399,7 +414,10 @@ where
     }
 
     if !missing.is_empty() {
-        return ReconstructResult::Missing { indices: missing };
+        return ReconstructResult::Missing {
+            indices: missing,
+            matched,
+        };
     }
 
     let tx_envelopes: Vec<Vec<u8>> = matched.into_iter().map(|x| x.unwrap()).collect();
@@ -900,7 +918,7 @@ mod tests {
         // must report the index as missing.
         let prev = [0x11; 32];
         let tx_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let tx_hash = compute_tx_hash(&tx_data);
+        let tx_hash = blake2b_hash(&tx_data);
 
         let full_xdr = build_full_tx_set_xdr(&prev, None, &[tx_data.clone()]);
         let tx_set_hash = hash_tx_set(&full_xdr);
@@ -908,7 +926,11 @@ mod tests {
         let compact = make_compact(tx_set_hash, prev, None, &[tx_hash]);
         let result = reconstruct_full_tx_set(&compact, std::iter::empty());
         match result {
-            ReconstructResult::Missing { indices } => assert_eq!(indices, vec![0]),
+            ReconstructResult::Missing { indices, matched } => {
+                assert_eq!(indices, vec![0]);
+                assert_eq!(matched.len(), 1);
+                assert!(matched[0].is_none());
+            }
             other => panic!("expected Missing, got {:?}", other),
         }
     }
@@ -917,7 +939,7 @@ mod tests {
     fn test_reconstruct_complete_when_mempool_has_all() {
         let prev = [0x77; 32];
         let tx_data = vec![1u8, 2, 3, 4, 5];
-        let tx_hash = compute_tx_hash(&tx_data);
+        let tx_hash = blake2b_hash(&tx_data);
 
         let full_xdr = build_full_tx_set_xdr(&prev, None, &[tx_data.clone()]);
         let tx_set_hash = hash_tx_set(&full_xdr);
@@ -939,8 +961,8 @@ mod tests {
         let prev = [0x99; 32];
         let tx_a = vec![10u8; 12];
         let tx_b = vec![20u8; 16];
-        let hash_a = compute_tx_hash(&tx_a);
-        let hash_b = compute_tx_hash(&tx_b);
+        let hash_a = blake2b_hash(&tx_a);
+        let hash_b = blake2b_hash(&tx_b);
 
         let full_xdr = build_full_tx_set_xdr(&prev, Some(12345), &[tx_a.clone(), tx_b.clone()]);
         let tx_set_hash = hash_tx_set(&full_xdr);
@@ -962,9 +984,9 @@ mod tests {
         let tx_a = vec![0xAA; 8];
         let tx_b = vec![0xBB; 8];
         let tx_c = vec![0xCC; 8];
-        let hash_a = compute_tx_hash(&tx_a);
-        let hash_b = compute_tx_hash(&tx_b);
-        let hash_c = compute_tx_hash(&tx_c);
+        let hash_a = blake2b_hash(&tx_a);
+        let hash_b = blake2b_hash(&tx_b);
+        let hash_c = blake2b_hash(&tx_c);
 
         let full_xdr =
             build_full_tx_set_xdr(&prev, None, &[tx_a.clone(), tx_b.clone(), tx_c.clone()]);
@@ -977,7 +999,13 @@ mod tests {
             vec![(hash_a, tx_a.clone()), (hash_c, tx_c.clone())].into_iter(),
         );
         match result {
-            ReconstructResult::Missing { indices } => assert_eq!(indices, vec![1]),
+            ReconstructResult::Missing { indices, matched } => {
+                assert_eq!(indices, vec![1]);
+                assert_eq!(matched.len(), 3);
+                assert!(matched[0].is_some());
+                assert!(matched[1].is_none());
+                assert!(matched[2].is_some());
+            }
             other => panic!("expected Missing, got {:?}", other),
         }
     }

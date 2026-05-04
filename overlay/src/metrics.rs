@@ -153,6 +153,15 @@ pub struct OverlayMetrics {
     pub compact_recon_partial: AtomicU64,
     pub compact_recon_hash_mismatch: AtomicU64,
     pub compact_recon_failed_fallback_legacy: AtomicU64,
+
+    // ═══ Pending-state housekeeping timeouts ═══
+    /// Outstanding `COMPACT_TX_SET_GET` requests that timed out without a
+    /// response (the housekeeping sweep marked them failed and fell back to
+    /// legacy).
+    pub compact_get_timeout: AtomicU64,
+    /// `PendingReconstruction` entries waiting on a `GET_TXS` response that
+    /// timed out (housekeeping sweep marked them failed and fell back).
+    pub compact_reconstruction_timeout: AtomicU64,
 }
 
 impl Default for OverlayMetrics {
@@ -222,6 +231,8 @@ impl Default for OverlayMetrics {
             compact_recon_partial: AtomicU64::new(0),
             compact_recon_hash_mismatch: AtomicU64::new(0),
             compact_recon_failed_fallback_legacy: AtomicU64::new(0),
+            compact_get_timeout: AtomicU64::new(0),
+            compact_reconstruction_timeout: AtomicU64::new(0),
         }
     }
 }
@@ -308,6 +319,8 @@ impl OverlayMetrics {
             compact_recon_failed_fallback_legacy: self
                 .compact_recon_failed_fallback_legacy
                 .load(ORD),
+            compact_get_timeout: self.compact_get_timeout.load(ORD),
+            compact_reconstruction_timeout: self.compact_reconstruction_timeout.load(ORD),
         }
     }
 
@@ -422,6 +435,10 @@ pub struct MetricsSnapshot {
     pub compact_recon_partial: u64,
     pub compact_recon_hash_mismatch: u64,
     pub compact_recon_failed_fallback_legacy: u64,
+
+    // Pending-state housekeeping timeouts
+    pub compact_get_timeout: u64,
+    pub compact_reconstruction_timeout: u64,
 }
 
 #[cfg(test)]

@@ -12,9 +12,9 @@
 //! QUIC provides independent loss recovery per stream.
 
 use crate::flood::{
-    encode_indices, hash_tx_set, reconstruct_full_tx_set, CachedTxSet, GetData, InvBatch,
-    InvBatcher, InvEntry, InvTracker, PendingRequests, ReconstructResult, TxBuffer, TxMessageType,
-    TxStreamMessage, GETDATA_PEER_TIMEOUT, INV_BATCH_MAX_DELAY,
+    blake2b_hash, encode_indices, hash_tx_set, reconstruct_full_tx_set, CachedTxSet, GetData,
+    InvBatch, InvBatcher, InvEntry, InvTracker, PendingRequests, ReconstructResult, TxBuffer,
+    TxMessageType, TxStreamMessage, GETDATA_PEER_TIMEOUT, INV_BATCH_MAX_DELAY,
 };
 use crate::metrics::OverlayMetrics;
 use stellar_xdr::{CompactTxSet, CompactTxSetMessage, Limits, ReadXdr, WriteXdr};
@@ -80,6 +80,14 @@ const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 /// Bounded channel capacity for TX events (backpressure for TX flooding)
 /// TXs that can't be queued are dropped - they'll be re-requested if needed.
 const TX_EVENT_CHANNEL_CAPACITY: usize = 10_000;
+
+/// Time after which an outstanding `COMPACT_TX_SET_GET` to a peer is
+/// abandoned and the request falls back to legacy fetch.
+const COMPACT_GET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Time after which a `PendingReconstruction` waiting on a `GET_TXS`
+/// response is abandoned and the request falls back to legacy fetch.
+const COMPACT_RECONSTRUCTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Events from the overlay to the application
 #[derive(Debug, Clone)]
@@ -427,9 +435,10 @@ impl OverlayHandle {
 struct PendingReconstruction {
     /// The CompactTxSet announcement we're trying to reconstruct from.
     compact: stellar_xdr::CompactTxSet,
-    /// Per-index slot for the matched envelope. `None` indicates the index
-    /// is missing and is included in the GET_TXS request.
-    matched: Vec<Option<stellar_xdr::TransactionEnvelope>>,
+    /// Per-index slot for the matched envelope, stored as already-serialized
+    /// XDR bytes. `None` indicates the slot is missing and is included in
+    /// the outstanding GET_TXS request.
+    matched: Vec<Option<Vec<u8>>>,
     /// Peer we requested the missing txs from.
     requested_from: PeerId,
     /// When the GET_TXS request was issued (for latency / cleanup).
@@ -464,7 +473,7 @@ struct SharedState {
     pending_compact_reconstructions: RwLock<HashMap<[u8; 32], PendingReconstruction>>,
     /// Hashes for which the compact path has terminally failed (Missing-after-GET_TXS
     /// or HashMismatch). `fetch_txset` short-circuits to legacy on hit.
-    compact_failed: RwLock<lru::LruCache<[u8; 32], Instant>>,
+    compact_failed: RwLock<lru::LruCache<[u8; 32], ()>>,
     /// Event sender for non-TX events (SCP, TxSet - critical path, unbounded)
     event_tx: mpsc::UnboundedSender<OverlayEvent>,
     /// Bounded TX event sender (backpressure - drops allowed)
@@ -1027,10 +1036,14 @@ impl StellarOverlay {
         }
 
         // Per-peer dedup for each compact set, keyed on tx_set_hash. Build a
-        // per-peer ordered list of compact sets to send.
+        // per-peer ordered list of compact sets to send. Each compact set's
+        // wire frame (4-byte tag + serialized CompactTxSet bytes) is built
+        // exactly once and shared via Arc across the per-peer send tasks.
         let compact_sets_vec = compact_sets.unwrap_or_default();
-        let mut per_peer_compact: HashMap<PeerId, Vec<(crate::flood::TxHash, Vec<u8>)>> =
-            HashMap::new();
+        let mut per_peer_compact: HashMap<
+            PeerId,
+            Vec<(crate::flood::TxHash, Arc<Vec<u8>>, usize)>,
+        > = HashMap::new();
         let mut total_compact_sends: usize = 0;
         if !compact_sets_vec.is_empty() {
             let mut sent_to = self.state.compact_set_sent_to.write().await;
@@ -1049,11 +1062,17 @@ impl StellarOverlay {
                 new_sent.extend(peers_for_this_set.iter().cloned());
                 sent_to.put(*tx_set_hash, new_sent);
 
+                let payload_len = bytes.len();
+                let frame: Arc<Vec<u8>> = Arc::new(encode_scp_frame(
+                    ScpStreamMessageType::CompactTxSet,
+                    bytes,
+                ));
                 for p in peers_for_this_set {
-                    per_peer_compact
-                        .entry(p)
-                        .or_default()
-                        .push((*tx_set_hash, bytes.clone()));
+                    per_peer_compact.entry(p).or_default().push((
+                        *tx_set_hash,
+                        Arc::clone(&frame),
+                        payload_len,
+                    ));
                     total_compact_sends += 1;
                 }
             }
@@ -1083,10 +1102,17 @@ impl StellarOverlay {
             .message_broadcast
             .fetch_add(1, Ordering::Relaxed);
 
+        // Build the envelope frame once and share via Arc across all peers
+        // that haven't been deduped out.
+        let envelope_frame: Arc<Vec<u8>> = Arc::new(encode_scp_frame(
+            ScpStreamMessageType::Envelope,
+            envelope,
+        ));
+
         for peer_id in peers_to_spawn {
             let state = Arc::clone(&self.state);
-            let envelope_bytes = if envelope_peers.contains(&peer_id) {
-                Some(envelope.to_vec())
+            let envelope_frame_for_peer = if envelope_peers.contains(&peer_id) {
+                Some(Arc::clone(&envelope_frame))
             } else {
                 None
             };
@@ -1097,9 +1123,7 @@ impl StellarOverlay {
                 // before the SCP envelope that references them. Within this
                 // task the per-peer SCP stream mutex is acquired sequentially,
                 // which preserves wire ordering.
-                for (tx_set_hash, bytes) in compact_for_peer {
-                    let payload_len = bytes.len();
-                    let frame = encode_scp_frame(ScpStreamMessageType::CompactTxSet, &bytes);
+                for (tx_set_hash, frame, payload_len) in compact_for_peer {
                     let frame_len = frame.len();
                     match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &frame)
                         .await
@@ -1141,8 +1165,7 @@ impl StellarOverlay {
                     }
                 }
 
-                if let Some(envelope) = envelope_bytes {
-                    let frame = encode_scp_frame(ScpStreamMessageType::Envelope, &envelope);
+                if let Some(frame) = envelope_frame_for_peer {
                     let frame_len = frame.len();
                     match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &frame)
                         .await
@@ -2626,7 +2649,7 @@ async fn handle_received_compact_set(
                 warn!("Failed to forward reconstructed TxSetReceived: {}", e);
             }
         }
-        ReconstructResult::Missing { indices } => {
+        ReconstructResult::Missing { indices, matched } => {
             state
                 .metrics
                 .compact_recon_partial
@@ -2638,40 +2661,15 @@ async fn handle_received_compact_set(
                 peer_id
             );
 
-            // Build matched-so-far slot vector. We re-do the digest match
-            // here to know the per-index assignment; this is cheap because
-            // we already have the snapshot.
-            let buffer = state.tx_buffer.read().await;
-            let snapshot = buffer.snapshot();
-            drop(buffer);
-            let key_set_hash: [u8; 32] = compact.tx_set_hash.0;
-            let mut digest_to_xdr: HashMap<[u8; 6], Vec<u8>> = HashMap::new();
-            for (tx_hash, tx_data) in snapshot {
-                digest_to_xdr.insert(
-                    crate::flood::compact_tx_digest(&key_set_hash, &tx_hash),
-                    tx_data,
-                );
-            }
-            let txs_bytes = compact.txs.as_slice();
-            let n = txs_bytes.len() / 6;
-            let mut matched: Vec<Option<stellar_xdr::TransactionEnvelope>> = Vec::with_capacity(n);
-            for i in 0..n {
-                let mut chunk = [0u8; 6];
-                chunk.copy_from_slice(&txs_bytes[i * 6..(i + 1) * 6]);
-                let env = match digest_to_xdr.get(&chunk) {
-                    Some(b) => stellar_xdr::TransactionEnvelope::from_xdr(b, Limits::none()).ok(),
-                    None => None,
-                };
-                matched.push(env);
-            }
-
-            // Stash pending reconstruction state.
+            // Stash pending reconstruction state. `matched` was built by
+            // `reconstruct_full_tx_set` from a single buffer snapshot; reuse
+            // it directly instead of redoing the digest match.
             {
                 let mut pending = state.pending_compact_reconstructions.write().await;
                 pending.insert(
                     hash,
                     PendingReconstruction {
-                        compact: compact.clone(),
+                        compact,
                         matched,
                         requested_from: peer_id.clone(),
                         requested_at: Instant::now(),
@@ -2768,21 +2766,23 @@ async fn handle_received_compact_txs(
     };
 
     // Map each received tx by its 6-byte SipHash digest under the tx-set key.
+    // Serialize each envelope once here and store the bytes; the same bytes
+    // are reused below to assemble the full tx set XDR.
     let key_set_hash: [u8; 32] = pending.compact.tx_set_hash.0;
-    let mut digest_to_env: HashMap<[u8; 6], stellar_xdr::TransactionEnvelope> = HashMap::new();
+    let mut digest_to_xdr: HashMap<[u8; 6], Vec<u8>> = HashMap::new();
     for env in received_envs {
         let env_xdr = match env.to_xdr(Limits::none()) {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let tx_hash = sha2_hash(&env_xdr);
-        digest_to_env.insert(
+        let tx_hash = blake2b_hash(&env_xdr);
+        digest_to_xdr.insert(
             crate::flood::compact_tx_digest(&key_set_hash, &tx_hash),
-            env,
+            env_xdr,
         );
     }
 
-    // Fill missing slots.
+    // Fill missing slots with the already-serialized envelope bytes.
     let txs_bytes = pending.compact.txs.as_slice();
     for (i, slot) in pending.matched.iter_mut().enumerate() {
         if slot.is_some() {
@@ -2790,8 +2790,8 @@ async fn handle_received_compact_txs(
         }
         let mut chunk = [0u8; 6];
         chunk.copy_from_slice(&txs_bytes[i * 6..(i + 1) * 6]);
-        if let Some(env) = digest_to_env.remove(&chunk) {
-            *slot = Some(env);
+        if let Some(env_xdr) = digest_to_xdr.remove(&chunk) {
+            *slot = Some(env_xdr);
         }
     }
 
@@ -2806,27 +2806,13 @@ async fn handle_received_compact_txs(
         return;
     }
 
-    // Build full tx set XDR from the matched envelopes.
-    let tx_envelopes_xdr: Vec<Vec<u8>> = match pending
-        .matched
-        .iter()
-        .map(|s| s.as_ref().unwrap().to_xdr(Limits::none()))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("COMPACT_RECON_SERIALIZE_FAIL: {:?}", e);
-            mark_compact_failed_and_fallback(state, hash).await;
-            return;
-        }
-    };
-
+    // All slots are `Some(Vec<u8>)`; pull them out and build the full tx set.
     let prev_hash: [u8; 32] = pending.compact.previous_ledger_hash.0;
-    let full_xdr = crate::flood::build_full_tx_set_xdr(
-        &prev_hash,
-        pending.compact.base_fee,
-        &tx_envelopes_xdr,
-    );
+    let base_fee = pending.compact.base_fee;
+    let tx_envelopes_xdr: Vec<Vec<u8>> =
+        pending.matched.into_iter().map(|s| s.unwrap()).collect();
+
+    let full_xdr = crate::flood::build_full_tx_set_xdr(&prev_hash, base_fee, &tx_envelopes_xdr);
     let actual_hash = hash_tx_set(&full_xdr);
     if actual_hash != hash {
         state
@@ -2869,7 +2855,6 @@ async fn handle_received_compact_txs(
     }) {
         warn!("Failed to forward reconstructed TxSetReceived: {}", e);
     }
-    let _ = pending.requested_at; // keep struct fully read
 }
 
 /// Mark `hash` as compact-failed and trigger a legacy TXSET fetch.
@@ -2880,20 +2865,11 @@ async fn mark_compact_failed_and_fallback(state: &Arc<SharedState>, hash: [u8; 3
         .fetch_add(1, Ordering::Relaxed);
     {
         let mut failed = state.compact_failed.write().await;
-        failed.put(hash, Instant::now());
+        failed.put(hash, ());
     }
     fetch_txset_legacy(state, hash).await;
 }
 
-/// SHA-256 helper (TX hash).
-fn sha2_hash(data: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
-}
 
 /// INV/GETDATA housekeeping task.
 ///
@@ -2982,6 +2958,65 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
                     warn!("Failed to send GETDATA retry to {}: {:?}", peer, e);
                 }
             }
+        }
+
+        // 3. Sweep stale compact-protocol pending state. The disconnect path
+        //    handles peer-down cleanup, but a peer can stay connected and
+        //    silently drop a request — these timeouts catch that.
+        let now = Instant::now();
+
+        let timed_out_get: Vec<[u8; 32]> = {
+            let mut pending = state.pending_compact_get.write().await;
+            let mut out = Vec::new();
+            pending.retain(|hash, (_, t)| {
+                if now.duration_since(*t) > COMPACT_GET_TIMEOUT {
+                    out.push(*hash);
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        if !timed_out_get.is_empty() {
+            state
+                .metrics
+                .compact_get_timeout
+                .fetch_add(timed_out_get.len() as u64, Ordering::Relaxed);
+        }
+        for hash in timed_out_get {
+            warn!(
+                "COMPACT_GET_TIMEOUT: Compact GET for {:02x?}... timed out — falling back to legacy",
+                &hash[..4]
+            );
+            mark_compact_failed_and_fallback(&state, hash).await;
+        }
+
+        let timed_out_recon: Vec<[u8; 32]> = {
+            let mut pending = state.pending_compact_reconstructions.write().await;
+            let mut out = Vec::new();
+            pending.retain(|hash, p| {
+                if now.duration_since(p.requested_at) > COMPACT_RECONSTRUCTION_TIMEOUT {
+                    out.push(*hash);
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        if !timed_out_recon.is_empty() {
+            state
+                .metrics
+                .compact_reconstruction_timeout
+                .fetch_add(timed_out_recon.len() as u64, Ordering::Relaxed);
+        }
+        for hash in timed_out_recon {
+            warn!(
+                "COMPACT_RECON_TIMEOUT: GET_TXS response for {:02x?}... timed out — falling back to legacy",
+                &hash[..4]
+            );
+            mark_compact_failed_and_fallback(&state, hash).await;
         }
     }
 }
@@ -3083,15 +3118,6 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
 //         }
 //     }
 // }
-
-/// Blake2b hash for deduplication
-fn blake2b_hash(data: &[u8]) -> [u8; 32] {
-    use blake2::{Blake2b, Digest};
-    use digest::consts::U32;
-    let mut hasher = Blake2b::<U32>::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // TX set fetching
