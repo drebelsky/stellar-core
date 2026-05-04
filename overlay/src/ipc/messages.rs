@@ -56,6 +56,10 @@ pub enum MessageType {
     /// Request overlay metrics snapshot (empty payload)
     RequestOverlayMetrics = 13,
 
+    /// Send compact tx set
+    /// Payload: [numHashes:4][txSetHash1:32][txSetHash2:32] [SCP message]
+    BroadcastScpCompact = 14,
+
     // ═══ Overlay → Core (Critical Path) ═══
     /// Received SCP envelope from network
     ScpReceived = 100,
@@ -108,6 +112,7 @@ impl TryFrom<u32> for MessageType {
             11 => Ok(MessageType::RequestTxSet),
             12 => Ok(MessageType::CacheTxSet),
             13 => Ok(MessageType::RequestOverlayMetrics),
+            14 => Ok(MessageType::CompactTxSet),
             100 => Ok(MessageType::ScpReceived),
             101 => Ok(MessageType::TopTxsResponse),
             102 => Ok(MessageType::PeerRequestsScpState),

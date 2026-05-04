@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "main/Config.h"
 #include "overlay/IPC.h"
 #include "xdr/Stellar-overlay.h"
 #include <functional>
@@ -53,7 +54,7 @@ class OverlayIPC
      * @param peerPort Port for peer TCP connections (passed to overlay)
      */
     OverlayIPC(std::string socketPath, std::string overlayBinaryPath,
-               uint16_t peerPort);
+               uint16_t peerPort, Config const& cfg);
 
     ~OverlayIPC();
 
@@ -231,6 +232,11 @@ class OverlayIPC
 
     // Protects mChannel->send() - channel is not thread-safe
     mutable std::mutex mSendMutex;
+
+    bool const mLeaderNominationEnabled;
+    bool const mNonLeaderNominationEnabled;
+    bool const mBallotRoundsEnabled;
+    PublicKey const mNodePublicKey;
 };
 
 } // namespace stellar

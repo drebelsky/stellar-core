@@ -4,6 +4,7 @@
 
 #include "overlay/OverlayIPC.h"
 #include "crypto/Hex.h"
+#include "herder/HerderUtils.h"
 #include "util/Logging.h"
 #include "util/types.h"
 #include "xdr/Stellar-ledger.h"
@@ -12,16 +13,22 @@
 #include <chrono>
 #include <signal.h>
 #include <sys/wait.h>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 namespace stellar
 {
 
 OverlayIPC::OverlayIPC(std::string socketPath, std::string overlayBinaryPath,
-                       uint16_t peerPort)
+                       uint16_t peerPort, Config const& cfg)
     : mSocketPath(std::move(socketPath))
     , mOverlayBinaryPath(std::move(overlayBinaryPath))
     , mPeerPort(peerPort)
+    , mLeaderNominationEnabled(cfg.COMPACT_TX_SET_LEADER_NOMINATION)
+    , mNonLeaderNominationEnabled(cfg.COMPACT_TX_SET_NON_LEADER_NOMINATION)
+    , mBallotRoundsEnabled(cfg.COMPACT_TX_SET_BALLOT_ROUNDS)
+    , mNodePublicKey(cfg.NODE_SEED.getPublicKey())
 {
 }
 
@@ -305,18 +312,87 @@ OverlayIPC::handleMessage(IPCMessage const& msg)
 bool
 OverlayIPC::broadcastSCP(SCPEnvelope const& envelope)
 {
+#define assertMessage(cond, msg) \
+    do \
+    { \
+        if (!(cond)) \
+        { \
+            CLOG_FATAL(Overlay, msg); \
+            releaseAssert(false); \
+        } \
+    } while (0)
+
     if (!mChannel || !mChannel->isConnected())
     {
         CLOG_WARNING(Overlay, "Cannot broadcast SCP: not connected to overlay");
         return false;
     }
 
-    IPCMessage msg;
-    msg.type = IPCMessageType::BROADCAST_SCP;
-    msg.payload = xdr::xdr_to_opaque(envelope);
+    std::unordered_set<Hash> txSetHashes;
+    if (mLeaderNominationEnabled || mNonLeaderNominationEnabled)
+    {
+        if (envelope.statement.pledges.type() == SCP_ST_NOMINATE)
+        {
+            auto values = getStellarValues(envelope.statement);
+            assertMessage(
+                values.has_value(),
+                "Failed to extract StellarValues from SCP envelope for "
+                "nomination");
+            for (auto const& sv : values.value())
+            {
+                txSetHashes.insert(sv.txSetHash);
+                assertMessage(sv.ext.v() == STELLAR_VALUE_SIGNED,
+                              "Expected signed StellarValue in nomination");
+                if (sv.ext.lcValueSignature().nodeID == mNodePublicKey)
+                {
+                    if (mLeaderNominationEnabled)
+                    {
+                        txSetHashes.insert(sv.txSetHash);
+                    }
+                }
+                else if (mNonLeaderNominationEnabled)
+                {
+                    txSetHashes.insert(sv.txSetHash);
+                }
+            }
+        }
+    }
+    else if (mBallotRoundsEnabled)
+    {
+        if (envelope.statement.pledges.type() != SCP_ST_NOMINATE)
+        {
+            auto hashes = getTxSetHashes(envelope);
+            assertMessage(hashes.has_value(),
+                          "Failed to extract TX set hashes from SCP envelope");
+            std::copy(hashes->begin(), hashes->end(),
+                      std::back_inserter(txSetHashes));
+        }
+    }
 
-    std::lock_guard<std::mutex> lock(mSendMutex);
+    IPCMessage msg;
+    if (!txSetHashes.empty())
+    {
+        msg.type = IPCMessageType::BROADCAST_SCP_COMPACT;
+        auto envelopeXDR = xdr::xdr_to_opaque(envelope);
+        msg.payload.reserve(txSetHashes.size() * 32 + 4 + envelopeXDR.size());
+        uint32_t numHashes = txSetHashes.size();
+        msg.payload.resize(4);
+        memcpy(msg.payload.data(), &numHashes, 4);
+        for (auto const& hash : txSetHashes)
+        {
+            msg.payload.insert(msg.payload.end(), hash.begin(), hash.end());
+        }
+        msg.payload.insert(msg.payload.end(), envelopeXDR.begin(),
+                           envelopeXDR.end());
+    }
+    else
+    {
+        msg.type = IPCMessageType::BROADCAST_SCP;
+        msg.payload = xdr::xdr_to_opaque(envelope);
+    }
+
     return mChannel->send(msg);
+#undef assertMessage
 }
 
 void
@@ -665,9 +741,10 @@ OverlayIPC::requestMetrics(int timeoutMs)
     std::unique_lock<std::mutex> lock(mMetricsMutex);
     mPendingMetricsResponse.reset();
 
-    bool gotResponse = mMetricsCv.wait_for(
-        lock, std::chrono::milliseconds(timeoutMs),
-        [this] { return mPendingMetricsResponse.has_value(); });
+    bool gotResponse =
+        mMetricsCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
+            return mPendingMetricsResponse.has_value();
+        });
 
     if (!gotResponse)
     {
