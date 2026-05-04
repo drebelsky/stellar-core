@@ -112,7 +112,7 @@ impl TryFrom<u32> for MessageType {
             11 => Ok(MessageType::RequestTxSet),
             12 => Ok(MessageType::CacheTxSet),
             13 => Ok(MessageType::RequestOverlayMetrics),
-            14 => Ok(MessageType::CompactTxSet),
+            14 => Ok(MessageType::BroadcastScpCompact),
             100 => Ok(MessageType::ScpReceived),
             101 => Ok(MessageType::TopTxsResponse),
             102 => Ok(MessageType::PeerRequestsScpState),

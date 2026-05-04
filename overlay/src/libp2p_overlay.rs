@@ -76,9 +76,10 @@ pub enum OverlayEvent {
 pub enum OverlayCommand {
     /// Broadcast SCP envelope to all peers
     BroadcastScp(Vec<u8>),
-    /// Broadcast SCP envelope with compact announcement
+    /// Broadcast SCP envelope with compact tx set announcements.
+    /// Each entry is `(tx_set_hash, serialized stellar_xdr::CompactTxSet)`.
     BroadcastScpCompact {
-        hashes: Vec<crate::flood::TxHash>,
+        compact_sets: Vec<(crate::flood::TxHash, Vec<u8>)>,
         envelope: Vec<u8>,
     },
     /// Broadcast TX to all peers
@@ -175,12 +176,15 @@ impl OverlayHandle {
 
     pub async fn broadcast_scp_compact(
         &self,
-        hashes: Vec<crate::flood::TxHash>,
+        compact_sets: Vec<(crate::flood::TxHash, Vec<u8>)>,
         envelope: Vec<u8>,
     ) {
         if let Err(e) = self
             .cmd_tx
-            .send(OverlayCommand::BroadcastScpCompact { hashes, envelope })
+            .send(OverlayCommand::BroadcastScpCompact {
+                compact_sets,
+                envelope,
+            })
             .await
         {
             warn!(
@@ -317,6 +321,8 @@ struct SharedState {
     tx_seen: RwLock<lru::LruCache<[u8; 32], ()>>,
     /// Track which peers we've sent each SCP message to (prevent duplicate sends)
     scp_sent_to: RwLock<lru::LruCache<[u8; 32], HashSet<PeerId>>>,
+    /// Track which peers we've sent each compact tx set to (per-peer dedup, keyed by tx_set_hash)
+    compact_set_sent_to: RwLock<lru::LruCache<[u8; 32], HashSet<PeerId>>>,
     /// Track which peers we've sent each TX to (prevent duplicate sends) - LEGACY
     tx_sent_to: RwLock<lru::LruCache<[u8; 32], HashSet<PeerId>>>,
     /// TX set sources: which peer has which TX set (learned from SCP messages)
@@ -361,6 +367,9 @@ impl SharedState {
                 std::num::NonZeroUsize::new(100000).unwrap(),
             )),
             scp_sent_to: RwLock::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(10000).unwrap(),
+            )),
+            compact_set_sent_to: RwLock::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(10000).unwrap(),
             )),
             tx_sent_to: RwLock::new(lru::LruCache::new(
@@ -536,8 +545,8 @@ impl StellarOverlay {
                         OverlayCommand::BroadcastScp(envelope) => {
                             self.broadcast_scp(&envelope, None).await;
                         }
-                        OverlayCommand::BroadcastScpCompact{hashes, envelope} => {
-                            self.broadcast_scp(&envelope, Some(hashes)).await;
+                        OverlayCommand::BroadcastScpCompact{compact_sets, envelope} => {
+                            self.broadcast_scp(&envelope, Some(compact_sets)).await;
                         }
                         OverlayCommand::BroadcastTx(tx) => {
                             self.broadcast_tx(&tx).await;
@@ -760,11 +769,19 @@ impl StellarOverlay {
         }
     }
 
-    /// Broadcast SCP envelope to all connected peers
+    /// Broadcast SCP envelope to all connected peers, optionally preceded by
+    /// compact tx set announcements on the same SCP stream.
+    ///
+    /// Each `(tx_set_hash, compact_xdr)` in `compact_sets` is sent before the
+    /// envelope, with per-peer dedup keyed on `tx_set_hash`. A single per-peer
+    /// task sends that peer's compact sets sequentially then the envelope —
+    /// per-peer ordering on the wire is preserved by the SCP stream's mutex
+    /// only when the writes happen within the same task (tokio Mutex isn't
+    /// FIFO across spawn order).
     async fn broadcast_scp(
         &mut self,
         envelope: &[u8],
-        compact_hashes: Option<Vec<crate::flood::TxHash>>,
+        compact_sets: Option<Vec<(crate::flood::TxHash, Vec<u8>)>>,
     ) {
         let hash = blake2b_hash(envelope);
 
@@ -774,77 +791,171 @@ impl StellarOverlay {
             seen.put(hash, ());
         }
 
-        // Determine which peers still need this message
         let streams = self.state.peer_streams.read().await;
-        let all_peers: Vec<_> = streams.keys().cloned().collect();
+        let all_peers: Vec<PeerId> = streams.keys().cloned().collect();
         drop(streams);
 
-        let peers_to_send: Vec<PeerId>;
+        if all_peers.is_empty() {
+            trace!(
+                "SCP_BROADCAST_SKIP: SCP {:02x?}... no peers connected",
+                &hash[..4]
+            );
+            return;
+        }
+
+        // Per-peer dedup for the envelope.
+        let envelope_peers: HashSet<PeerId>;
         {
             let mut sent_to = self.state.scp_sent_to.write().await;
             let already_sent: HashSet<PeerId> = sent_to.peek(&hash).cloned().unwrap_or_default();
 
-            peers_to_send = all_peers
-                .into_iter()
+            envelope_peers = all_peers
+                .iter()
                 .filter(|p| !already_sent.contains(p))
+                .cloned()
                 .collect();
 
-            if peers_to_send.is_empty() {
-                trace!(
-                    "SCP_BROADCAST_SKIP: SCP {:02x?}... already sent to all connected peers",
-                    &hash[..4]
-                );
-                return;
+            if !envelope_peers.is_empty() {
+                let mut new_sent = already_sent;
+                new_sent.extend(envelope_peers.iter().cloned());
+                sent_to.put(hash, new_sent);
             }
+        }
 
-            // Update sent_to with the peers we're about to send to
-            let mut new_sent = already_sent;
-            new_sent.extend(peers_to_send.iter().cloned());
-            sent_to.put(hash, new_sent);
+        // Per-peer dedup for each compact set, keyed on tx_set_hash. Build a
+        // per-peer ordered list of compact sets to send.
+        let compact_sets_vec = compact_sets.unwrap_or_default();
+        let mut per_peer_compact: HashMap<PeerId, Vec<(crate::flood::TxHash, Vec<u8>)>> =
+            HashMap::new();
+        let mut total_compact_sends: usize = 0;
+        if !compact_sets_vec.is_empty() {
+            let mut sent_to = self.state.compact_set_sent_to.write().await;
+            for (tx_set_hash, bytes) in &compact_sets_vec {
+                let already_sent: HashSet<PeerId> =
+                    sent_to.peek(tx_set_hash).cloned().unwrap_or_default();
+                let peers_for_this_set: Vec<PeerId> = all_peers
+                    .iter()
+                    .filter(|p| !already_sent.contains(p))
+                    .cloned()
+                    .collect();
+                if peers_for_this_set.is_empty() {
+                    continue;
+                }
+                let mut new_sent = already_sent;
+                new_sent.extend(peers_for_this_set.iter().cloned());
+                sent_to.put(*tx_set_hash, new_sent);
+
+                for p in peers_for_this_set {
+                    per_peer_compact
+                        .entry(p)
+                        .or_default()
+                        .push((*tx_set_hash, bytes.clone()));
+                    total_compact_sends += 1;
+                }
+            }
+        }
+
+        let mut peers_to_spawn: HashSet<PeerId> = envelope_peers.clone();
+        peers_to_spawn.extend(per_peer_compact.keys().cloned());
+
+        if peers_to_spawn.is_empty() {
+            trace!(
+                "SCP_BROADCAST_SKIP: SCP {:02x?}... and any compact sets already sent to all connected peers",
+                &hash[..4]
+            );
+            return;
         }
 
         info!(
-            "SCP_BROADCAST: Broadcasting SCP {:02x?}... ({} bytes) to {} peers",
+            "SCP_BROADCAST: Broadcasting SCP {:02x?}... ({} bytes) to {} peers; {} compact-set sends across {} peers",
             &hash[..4],
             envelope.len(),
-            peers_to_send.len()
+            envelope_peers.len(),
+            total_compact_sends,
+            per_peer_compact.len(),
         );
         self.state
             .metrics
             .message_broadcast
             .fetch_add(1, Ordering::Relaxed);
 
-        // Spawn parallel send tasks - don't block event loop waiting for each peer
-        for peer_id in peers_to_send {
+        for peer_id in peers_to_spawn {
             let state = Arc::clone(&self.state);
-            let envelope = envelope.to_vec();
+            let envelope_bytes = if envelope_peers.contains(&peer_id) {
+                Some(envelope.to_vec())
+            } else {
+                None
+            };
+            let compact_for_peer = per_peer_compact.remove(&peer_id).unwrap_or_default();
+
             tokio::spawn(async move {
-                match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &envelope).await
-                {
-                    Ok(_) => {
-                        state
-                            .metrics
-                            .send_scp_message
-                            .fetch_add(1, Ordering::Relaxed);
-                        state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
-                        state
-                            .metrics
-                            .byte_write
-                            .fetch_add(envelope.len() as u64, Ordering::Relaxed);
-                        debug!(
-                            "SCP_SEND_OK: Sent SCP {:02x?}... to {}",
-                            &hash[..4],
-                            peer_id
-                        );
+                // Send compact sets first so peers see the tx-set announcements
+                // before the SCP envelope that references them. Within this
+                // task the per-peer SCP stream mutex is acquired sequentially,
+                // which preserves wire ordering.
+                for (tx_set_hash, bytes) in compact_for_peer {
+                    let len = bytes.len();
+                    match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &bytes)
+                        .await
+                    {
+                        Ok(_) => {
+                            state
+                                .metrics
+                                .send_scp_message
+                                .fetch_add(1, Ordering::Relaxed);
+                            state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
+                            state
+                                .metrics
+                                .byte_write
+                                .fetch_add(len as u64, Ordering::Relaxed);
+                            debug!(
+                                "COMPACT_SET_SEND_OK: Sent compact set {:02x?}... ({} bytes) to {}",
+                                &tx_set_hash[..4],
+                                len,
+                                peer_id
+                            );
+                        }
+                        Err(e) => {
+                            state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
+                            warn!(
+                                "COMPACT_SET_SEND_FAIL: Failed to send compact set {:02x?}... to {}: {}",
+                                &tx_set_hash[..4],
+                                peer_id,
+                                e
+                            );
+                        }
                     }
-                    Err(e) => {
-                        state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
-                        warn!(
-                            "SCP_SEND_FAIL: Failed to send SCP {:02x?}... to {}: {}",
-                            &hash[..4],
-                            peer_id,
-                            e
-                        );
+                }
+
+                if let Some(envelope) = envelope_bytes {
+                    match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &envelope)
+                        .await
+                    {
+                        Ok(_) => {
+                            state
+                                .metrics
+                                .send_scp_message
+                                .fetch_add(1, Ordering::Relaxed);
+                            state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
+                            state
+                                .metrics
+                                .byte_write
+                                .fetch_add(envelope.len() as u64, Ordering::Relaxed);
+                            debug!(
+                                "SCP_SEND_OK: Sent SCP {:02x?}... to {}",
+                                &hash[..4],
+                                peer_id
+                            );
+                        }
+                        Err(e) => {
+                            state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
+                            warn!(
+                                "SCP_SEND_FAIL: Failed to send SCP {:02x?}... to {}: {}",
+                                &hash[..4],
+                                peer_id,
+                                e
+                            );
+                        }
                     }
                 }
             });

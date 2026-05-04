@@ -35,7 +35,6 @@ use libp2p_overlay::{
     create_overlay, OverlayEvent as LibP2pOverlayEvent, OverlayHandle as LibP2pOverlayHandle,
 };
 use metrics::OverlayMetrics;
-use stellar_xdr::{GeneralizedTransactionSet, ReadXdr, WriteXdr};
 
 /// Command-line arguments
 struct Args {
@@ -780,12 +779,7 @@ impl App {
                 {
                     let current_seq = *self.current_ledger_seq.read().await;
                     let mut cache = self.tx_set_cache.write().await;
-                    cache.insert(CachedTxSet {
-                        hash,
-                        xdr: data.clone(),
-                        ledger_seq: current_seq,
-                        tx_hashes: vec![],
-                    });
+                    cache.insert(CachedTxSet::from_xdr(hash, data.clone(), current_seq));
                 }
 
                 // Always push TX set to Core (Core handles dedup)
@@ -1003,9 +997,9 @@ impl App {
             }
 
             MessageType::BroadcastScpCompact => {
-                /// Payload: [numHashes:4][txSetHash1:32][txSetHash2:32] [SCP message]
+                // Payload: [numHashes:4][txSetHash1:32][txSetHash2:32]... [SCP message]
                 let count = u32::from_le_bytes(msg.payload[0..4].try_into().unwrap()) as usize;
-                let hashes = Vec::with_capacity(count);
+                let mut hashes = Vec::with_capacity(count);
                 for i in 0..count {
                     let start = 4 + i * 32;
                     let end = start + 32;
@@ -1018,7 +1012,28 @@ impl App {
                     hashes.push(hash);
                 }
                 let scp_msg = msg.payload[4 + count * 32..].to_vec();
-                // Forward SCP broadcast via libp2p QUIC (dedicated stream, no blocking)
+
+                // Resolve each hash to its cached serialized CompactTxSet. Misses
+                // get warned and skipped — we still forward the envelope with
+                // whatever compact sets we did find.
+                let mut compact_sets = Vec::with_capacity(hashes.len());
+                {
+                    let cache = self.tx_set_cache.read().await;
+                    for hash in &hashes {
+                        match cache.get(hash) {
+                            Some(cached) => {
+                                compact_sets.push((*hash, cached.compact_xdr.clone()));
+                            }
+                            None => {
+                                warn!(
+                                    "BroadcastScpCompact: TX set {:02x?}... not in local cache; skipping its compact announcement",
+                                    &hash[..4]
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let id_bytes = if scp_msg.len() >= 4 {
                     &scp_msg[..4]
                 } else {
@@ -1026,15 +1041,16 @@ impl App {
                 };
 
                 info!(
-                    "SCP_FROM_CORE: Core requested broadcast of SCP (id={:02x?}) ({} bytes) with optimistic {} TX set hashes ({} total bytes)",
+                    "SCP_FROM_CORE: Core requested broadcast of SCP (id={:02x?}) ({} bytes) with optimistic {} TX set hashes ({} resolved, {} total bytes)",
                     id_bytes,
                     scp_msg.len(),
                     count,
+                    compact_sets.len(),
                     msg.payload.len()
                 );
                 let handle = self.libp2p_handle.clone();
                 tokio::spawn(async move {
-                    handle.broadcast_scp_compact(hashes, scp_msg).await;
+                    handle.broadcast_scp_compact(compact_sets, scp_msg).await;
                 });
             }
 
@@ -1142,46 +1158,9 @@ impl App {
                     xdr.len()
                 );
 
-                let mut hashes = Vec::new();
-                if let Ok(txset) =
-                    GeneralizedTransactionSet::from_xdr(&xdr, stellar_xdr::Limits::none())
-                {
-                    let GeneralizedTransactionSet::V1(txset) = txset;
-                    for phase in txset.phases {
-                        match phase {
-                            stellar_xdr::TransactionPhase::V0(components) => {
-                                if components.len() != 1 {
-                                    panic!("Unexpected number of components in TX set");
-                                }
-                                let stellar_xdr::TxSetComponent::TxsetCompTxsMaybeDiscountedFee(
-                                    txset_comp,
-                                ) = components.iter().next().unwrap();
-                                for tx in &txset_comp.txs {
-                                    let tx_xdr = tx
-                                        .to_xdr(stellar_xdr::Limits::none())
-                                        .expect("Failed to convert TxEnvelope to XDR");
-                                    hashes.push(flood::compute_tx_hash(&tx_xdr));
-                                }
-                            }
-                            stellar_xdr::TransactionPhase::V1(parallel) => {
-                                if parallel.execution_stages.len() > 0 {
-                                    panic!("Unexpected execution stages in TX set");
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    panic!("Failed to parse TX set XDR for caching");
-                }
-
                 let current_seq = *self.current_ledger_seq.read().await;
                 let mut cache = self.tx_set_cache.write().await;
-                cache.insert(CachedTxSet {
-                    hash,
-                    xdr,
-                    ledger_seq: current_seq,
-                    tx_hashes: hashes,
-                });
+                cache.insert(CachedTxSet::from_xdr(hash, xdr, current_seq));
             }
 
             MessageType::SubmitTx => {

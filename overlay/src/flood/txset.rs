@@ -3,8 +3,15 @@
 //! Builds GeneralizedTransactionSet XDR from mempool transactions.
 //! Uses CLASSIC phase only for MVP. TODO: Add SOROBAN phase support.
 
+use crate::flood::compute_tx_hash;
 use sha2::{Digest, Sha256};
+use siphasher::sip::SipHasher24;
 use std::collections::HashMap;
+use std::hash::Hasher;
+use stellar_xdr::{
+    CompactTxSet, GeneralizedTransactionSet, Hash, Limits, ReadXdr, TransactionPhase,
+    TxSetComponent, WriteXdr,
+};
 
 /// 32-byte hash
 pub type Hash256 = [u8; 32];
@@ -13,7 +20,7 @@ pub type Hash256 = [u8; 32];
 pub type TxHash = [u8; 32];
 
 /// A cached TX set with its XDR and hash.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CachedTxSet {
     /// The TX set hash (SHA256 of XDR)
     pub hash: Hash256,
@@ -23,6 +30,12 @@ pub struct CachedTxSet {
     pub ledger_seq: u32,
     /// Hashes of TXs included in this set (for mempool cleanup)
     pub tx_hashes: Vec<TxHash>,
+    /// Previous ledger hash, extracted from the GeneralizedTransactionSet XDR
+    pub previous_ledger_hash: Hash256,
+    /// Base fee for the CLASSIC component (None when no discounted fee was set)
+    pub base_fee: Option<i64>,
+    /// Eagerly built serialized stellar_xdr::CompactTxSet for this set
+    pub compact_xdr: Vec<u8>,
 }
 
 /// TX set cache - stores built TX sets by hash for retrieval.
@@ -164,6 +177,64 @@ pub fn build_tx_set_xdr(prev_ledger_hash: &Hash256, tx_envelopes: &[Vec<u8>]) ->
     xdr
 }
 
+impl CachedTxSet {
+    /// Build a `CachedTxSet` from a serialized GeneralizedTransactionSet.
+    ///
+    /// Parses the XDR once to extract `tx_hashes`, `previous_ledger_hash`, and
+    /// the CLASSIC component's `base_fee`, then eagerly builds the serialized
+    /// `CompactTxSet` for use by the broadcast path.
+    ///
+    /// Panics on malformed XDR or unexpected structure (matches existing
+    /// invariants: exactly one CLASSIC component, zero SOROBAN execution stages).
+    pub fn from_xdr(hash: Hash256, xdr: Vec<u8>, ledger_seq: u32) -> Self {
+        let txset = GeneralizedTransactionSet::from_xdr(&xdr, Limits::none())
+            .expect("Failed to parse TX set XDR for caching");
+        let GeneralizedTransactionSet::V1(txset) = txset;
+
+        let previous_ledger_hash: Hash256 = txset.previous_ledger_hash.0;
+
+        let mut tx_hashes = Vec::new();
+        let mut base_fee: Option<i64> = None;
+
+        for phase in txset.phases.iter() {
+            match phase {
+                TransactionPhase::V0(components) => {
+                    if components.len() != 1 {
+                        panic!("Unexpected number of components in TX set");
+                    }
+                    let TxSetComponent::TxsetCompTxsMaybeDiscountedFee(txset_comp) =
+                        components.iter().next().unwrap();
+                    base_fee = txset_comp.base_fee;
+                    for tx in &txset_comp.txs {
+                        let tx_xdr = tx
+                            .to_xdr(Limits::none())
+                            .expect("Failed to convert TxEnvelope to XDR");
+                        tx_hashes.push(compute_tx_hash(&tx_xdr));
+                    }
+                }
+                TransactionPhase::V1(parallel) => {
+                    if !parallel.execution_stages.is_empty() {
+                        panic!("Unexpected execution stages in TX set");
+                    }
+                }
+            }
+        }
+
+        let compact_xdr =
+            build_compact_tx_set_xdr(&hash, &previous_ledger_hash, base_fee, &tx_hashes);
+
+        Self {
+            hash,
+            xdr,
+            ledger_seq,
+            tx_hashes,
+            previous_ledger_hash,
+            base_fee,
+            compact_xdr,
+        }
+    }
+}
+
 /// Compute the hash of a TX set XDR.
 pub fn hash_tx_set(xdr: &[u8]) -> Hash256 {
     let mut hasher = Sha256::new();
@@ -172,6 +243,42 @@ pub fn hash_tx_set(xdr: &[u8]) -> Hash256 {
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&result);
     hash
+}
+
+/// Build a serialized `stellar_xdr::CompactTxSet` for the given tx set.
+///
+/// `txs` is built from per-tx 6-byte SipHash-2-4 digests, where the SipHash
+/// key is the first 16 bytes of `tx_set_hash` and the input is the 32-byte
+/// `tx_hash`. This matches the C++ stellar-core compact tx set wire format.
+pub fn build_compact_tx_set_xdr(
+    tx_set_hash: &Hash256,
+    previous_ledger_hash: &Hash256,
+    base_fee: Option<i64>,
+    tx_hashes: &[TxHash],
+) -> Vec<u8> {
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&tx_set_hash[..16]);
+
+    let mut txs_bytes = Vec::with_capacity(tx_hashes.len() * 6);
+    for tx_hash in tx_hashes {
+        let mut hasher = SipHasher24::new_with_key(&key);
+        hasher.write(tx_hash);
+        let digest = hasher.finish().to_le_bytes();
+        txs_bytes.extend_from_slice(&digest[..6]);
+    }
+
+    let compact = CompactTxSet {
+        tx_set_hash: Hash(*tx_set_hash),
+        previous_ledger_hash: Hash(*previous_ledger_hash),
+        base_fee,
+        txs: txs_bytes
+            .try_into()
+            .expect("compact tx set txs field exceeded XDR length limit"),
+    };
+
+    compact
+        .to_xdr(Limits::none())
+        .expect("CompactTxSet XDR serialization failed")
 }
 
 #[cfg(test)]
@@ -285,6 +392,7 @@ mod tests {
             xdr: vec![1, 2, 3],
             ledger_seq: 100,
             tx_hashes: vec![],
+            ..Default::default()
         };
 
         cache.insert(tx_set.clone());
@@ -303,12 +411,14 @@ mod tests {
             xdr: vec![],
             ledger_seq: 100,
             tx_hashes: vec![],
+            ..Default::default()
         });
         cache.insert(CachedTxSet {
             hash: [2u8; 32],
             xdr: vec![],
             ledger_seq: 200,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         cache.evict_before(150);
@@ -326,12 +436,14 @@ mod tests {
             xdr: vec![],
             ledger_seq: 100,
             tx_hashes: vec![],
+            ..Default::default()
         });
         cache.insert(CachedTxSet {
             hash: [2u8; 32],
             xdr: vec![],
             ledger_seq: 101,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         assert_eq!(cache.len(), 2);
@@ -342,6 +454,7 @@ mod tests {
             xdr: vec![],
             ledger_seq: 102,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         assert_eq!(cache.len(), 2, "Cache should stay at capacity");
@@ -361,6 +474,7 @@ mod tests {
             xdr: vec![],
             ledger_seq: 100,
             tx_hashes: tx_hashes.clone(),
+            ..Default::default()
         });
 
         let removed = cache.remove(&[1u8; 32]);
@@ -388,12 +502,14 @@ mod tests {
             xdr: vec![],
             ledger_seq: 100,
             tx_hashes: vec![],
+            ..Default::default()
         });
         cache.insert(CachedTxSet {
             hash: [2u8; 32],
             xdr: vec![],
             ledger_seq: 101,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         assert_eq!(cache.len(), 2);
@@ -414,6 +530,7 @@ mod tests {
             xdr: vec![1, 2, 3],
             ledger_seq: 100,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         // Insert with same hash but different data
@@ -422,11 +539,75 @@ mod tests {
             xdr: vec![4, 5, 6],
             ledger_seq: 200,
             tx_hashes: vec![],
+            ..Default::default()
         });
 
         assert_eq!(cache.len(), 1, "Should not create duplicate");
         let retrieved = cache.get(&[1u8; 32]).unwrap();
         assert_eq!(retrieved.ledger_seq, 200, "Should have newer data");
         assert_eq!(retrieved.xdr, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_build_compact_tx_set_xdr_empty() {
+        let tx_set_hash = [0xAA; 32];
+        let prev = [0xBB; 32];
+        let bytes = build_compact_tx_set_xdr(&tx_set_hash, &prev, None, &[]);
+
+        let parsed = CompactTxSet::from_xdr(&bytes, Limits::none()).unwrap();
+        assert_eq!(parsed.tx_set_hash.0, tx_set_hash);
+        assert_eq!(parsed.previous_ledger_hash.0, prev);
+        assert_eq!(parsed.base_fee, None);
+        assert_eq!(parsed.txs.len(), 0);
+    }
+
+    #[test]
+    fn test_build_compact_tx_set_xdr_single_tx() {
+        let tx_set_hash = [0x11; 32];
+        let prev = [0x22; 32];
+        let tx_hashes = vec![[0x33; 32]];
+        let bytes = build_compact_tx_set_xdr(&tx_set_hash, &prev, Some(100), &tx_hashes);
+
+        let parsed = CompactTxSet::from_xdr(&bytes, Limits::none()).unwrap();
+        assert_eq!(parsed.base_fee, Some(100));
+        assert_eq!(parsed.txs.len(), 6, "single tx siphash is 6 bytes");
+
+        // Same inputs produce identical output (deterministic).
+        let bytes2 = build_compact_tx_set_xdr(&tx_set_hash, &prev, Some(100), &tx_hashes);
+        assert_eq!(bytes, bytes2);
+    }
+
+    #[test]
+    fn test_build_compact_tx_set_xdr_multi_tx() {
+        let tx_set_hash = [0x44; 32];
+        let prev = [0x55; 32];
+        let tx_hashes = vec![[0x01; 32], [0x02; 32], [0x03; 32]];
+        let bytes = build_compact_tx_set_xdr(&tx_set_hash, &prev, None, &tx_hashes);
+
+        let parsed = CompactTxSet::from_xdr(&bytes, Limits::none()).unwrap();
+        assert_eq!(parsed.txs.len(), 18, "3 txs * 6 bytes each");
+
+        let chunk0 = &parsed.txs[0..6];
+        let chunk1 = &parsed.txs[6..12];
+        let chunk2 = &parsed.txs[12..18];
+        assert_ne!(chunk0, chunk1);
+        assert_ne!(chunk1, chunk2);
+    }
+
+    #[test]
+    fn test_build_compact_tx_set_xdr_key_depends_on_tx_set_hash() {
+        let prev = [0u8; 32];
+        let tx_hashes = vec![[0xCD; 32]];
+
+        let bytes_a = build_compact_tx_set_xdr(&[0x01; 32], &prev, None, &tx_hashes);
+        let bytes_b = build_compact_tx_set_xdr(&[0x02; 32], &prev, None, &tx_hashes);
+
+        let a = CompactTxSet::from_xdr(&bytes_a, Limits::none()).unwrap();
+        let b = CompactTxSet::from_xdr(&bytes_b, Limits::none()).unwrap();
+        assert_ne!(
+            a.txs.as_slice(),
+            b.txs.as_slice(),
+            "different tx_set_hash keys must produce different siphash output"
+        );
     }
 }
