@@ -821,6 +821,112 @@ impl App {
                     );
                 }
             }
+            LibP2pOverlayEvent::CompactTxSetGetRequested { hash, from } => {
+                info!(
+                    "Peer {} requesting compact TxSet {:02x?}...",
+                    from,
+                    &hash[..4]
+                );
+                let cache = self.tx_set_cache.read().await;
+                if let Some(cached) = cache.get(&hash) {
+                    let handle = self.libp2p_handle.clone();
+                    let compact_xdr = cached.compact_xdr.clone();
+                    tokio::spawn(async move {
+                        handle
+                            .send_compact_txset_response(hash, compact_xdr, from)
+                            .await;
+                    });
+                } else {
+                    debug!(
+                        "compact TxSet {:02x?}... NOT IN CACHE - cannot serve to {}",
+                        &hash[..4],
+                        from
+                    );
+                }
+            }
+            LibP2pOverlayEvent::CompactTxSetGetTxsRequested {
+                hash,
+                indices,
+                from,
+            } => {
+                info!(
+                    "Peer {} requesting {} txs from TxSet {:02x?}...",
+                    from,
+                    indices.len(),
+                    &hash[..4]
+                );
+                let cache = self.tx_set_cache.read().await;
+                let cached = match cache.get(&hash) {
+                    Some(c) => c,
+                    None => {
+                        debug!(
+                            "compact TxSet {:02x?}... NOT IN CACHE - cannot extract {} txs for {}",
+                            &hash[..4],
+                            indices.len(),
+                            from
+                        );
+                        return;
+                    }
+                };
+                // Extract the requested transactions from the cached full
+                // GeneralizedTransactionSet XDR. Walk the parsed structure
+                // and pick out envelopes by their position in the flat
+                // CLASSIC list.
+                use stellar_xdr::{
+                    GeneralizedTransactionSet, Limits, ReadXdr, TransactionPhase, TxSetComponent,
+                    WriteXdr,
+                };
+                let parsed = match GeneralizedTransactionSet::from_xdr(&cached.xdr, Limits::none())
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse cached TxSet {:02x?}...: {}",
+                            &hash[..4],
+                            e
+                        );
+                        return;
+                    }
+                };
+                let GeneralizedTransactionSet::V1(txset) = parsed;
+                let mut all_envelopes_xdr: Vec<Vec<u8>> = Vec::new();
+                for phase in txset.phases.iter() {
+                    if let TransactionPhase::V0(components) = phase {
+                        for TxSetComponent::TxsetCompTxsMaybeDiscountedFee(c) in components.iter() {
+                            for tx in &c.txs {
+                                match tx.to_xdr(Limits::none()) {
+                                    Ok(b) => all_envelopes_xdr.push(b),
+                                    Err(e) => {
+                                        warn!("Failed to serialize tx envelope: {}", e);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut requested: Vec<Vec<u8>> = Vec::with_capacity(indices.len());
+                for &i in &indices {
+                    match all_envelopes_xdr.get(i as usize) {
+                        Some(b) => requested.push(b.clone()),
+                        None => {
+                            warn!(
+                                "Index {} out of range ({} txs) for TxSet {:02x?}...",
+                                i,
+                                all_envelopes_xdr.len(),
+                                &hash[..4]
+                            );
+                            return;
+                        }
+                    }
+                }
+                let handle = self.libp2p_handle.clone();
+                tokio::spawn(async move {
+                    handle
+                        .send_compact_txset_txs_response(hash, requested, from)
+                        .await;
+                });
+            }
 
             LibP2pOverlayEvent::ScpStateRequested {
                 peer_id,

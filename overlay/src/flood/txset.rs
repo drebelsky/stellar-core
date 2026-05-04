@@ -281,6 +281,220 @@ pub fn build_compact_tx_set_xdr(
         .expect("CompactTxSet XDR serialization failed")
 }
 
+/// Build a `GeneralizedTransactionSet` XDR (V1, CLASSIC sequential + empty
+/// SOROBAN parallel) like `build_tx_set_xdr`, but also encodes a discounted
+/// `base_fee` in the CLASSIC component when `Some`.
+pub fn build_full_tx_set_xdr(
+    prev_ledger_hash: &Hash256,
+    base_fee: Option<i64>,
+    tx_envelopes: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut xdr = Vec::new();
+
+    // GeneralizedTransactionSet union discriminant: v = 1
+    xdr.extend_from_slice(&1u32.to_be_bytes());
+    // TransactionSetV1.previousLedgerHash
+    xdr.extend_from_slice(prev_ledger_hash);
+    // TransactionSetV1.phases length = 2 (CLASSIC + SOROBAN)
+    xdr.extend_from_slice(&2u32.to_be_bytes());
+
+    // ── PHASE 0: CLASSIC (v0Components) ──
+    xdr.extend_from_slice(&0u32.to_be_bytes());
+    if tx_envelopes.is_empty() {
+        // Empty phase: 0 components
+        xdr.extend_from_slice(&0u32.to_be_bytes());
+    } else {
+        // 1 component
+        xdr.extend_from_slice(&1u32.to_be_bytes());
+        // TxSetComponent discriminant: TXSET_COMP_TXS_MAYBE_DISCOUNTED_FEE = 0
+        xdr.extend_from_slice(&0u32.to_be_bytes());
+        // Optional<int64> baseFee
+        match base_fee {
+            None => xdr.extend_from_slice(&0u32.to_be_bytes()),
+            Some(fee) => {
+                xdr.extend_from_slice(&1u32.to_be_bytes());
+                xdr.extend_from_slice(&fee.to_be_bytes());
+            }
+        }
+        // txs length
+        xdr.extend_from_slice(&(tx_envelopes.len() as u32).to_be_bytes());
+        for tx in tx_envelopes {
+            xdr.extend_from_slice(tx);
+        }
+    }
+
+    // ── PHASE 1: SOROBAN (parallelTxsComponent, empty) ──
+    xdr.extend_from_slice(&1u32.to_be_bytes());
+    // Optional baseFee = None
+    xdr.extend_from_slice(&0u32.to_be_bytes());
+    // executionStages length = 0
+    xdr.extend_from_slice(&0u32.to_be_bytes());
+
+    xdr
+}
+
+/// Outcome of attempting to reconstruct a full tx set from a `CompactTxSet`
+/// announcement and the local pool of known transaction envelopes.
+#[derive(Debug)]
+pub enum ReconstructResult {
+    /// All siphash digests matched a known tx and the resulting full tx set
+    /// XDR re-hashes to `compact.tx_set_hash`. Caller can forward these
+    /// bytes via `TX_SET_AVAILABLE`.
+    Complete(Vec<u8>),
+    /// One or more digests didn't match any known tx. Indices are positions
+    /// within `compact.txs` (0-based, in the order the compact set lists
+    /// them). Caller should request these via `COMPACT_TX_SET_GET_TXS`.
+    Missing { indices: Vec<u32> },
+    /// All digests matched a known tx, but the resulting XDR hashes to a
+    /// different value than `compact.tx_set_hash` — the digest space is too
+    /// small (6 bytes) and a collision led us to pick the wrong tx.
+    HashMismatch { reconstructed_hash: Hash256 },
+}
+
+/// Compute a 6-byte SipHash-2-4 digest using the first 16 bytes of
+/// `tx_set_hash` as the key. Matches `build_compact_tx_set_xdr`.
+pub fn compact_tx_digest(tx_set_hash: &Hash256, tx_hash: &TxHash) -> [u8; 6] {
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&tx_set_hash[..16]);
+    let mut hasher = SipHasher24::new_with_key(&key);
+    hasher.write(tx_hash);
+    let digest = hasher.finish().to_le_bytes();
+    let mut out = [0u8; 6];
+    out.copy_from_slice(&digest[..6]);
+    out
+}
+
+/// Try to reconstruct a full `GeneralizedTransactionSet` from a compact
+/// announcement plus an iterable of known `(tx_hash, tx_envelope_xdr)`
+/// pairs (typically the local TxBuffer / mempool snapshot).
+pub fn reconstruct_full_tx_set<I>(compact: &CompactTxSet, known_txs: I) -> ReconstructResult
+where
+    I: IntoIterator<Item = (TxHash, Vec<u8>)>,
+{
+    let tx_set_hash: Hash256 = compact.tx_set_hash.0;
+
+    // Index known txs by their 6-byte digest.
+    let mut digest_to_tx: HashMap<[u8; 6], Vec<u8>> = HashMap::new();
+    for (tx_hash, tx_data) in known_txs {
+        let digest = compact_tx_digest(&tx_set_hash, &tx_hash);
+        digest_to_tx.insert(digest, tx_data);
+    }
+
+    // Walk compact.txs in 6-byte chunks.
+    let txs_bytes = compact.txs.as_slice();
+    let n = txs_bytes.len() / 6;
+    let mut matched: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
+    let mut missing: Vec<u32> = Vec::new();
+
+    for i in 0..n {
+        let mut chunk = [0u8; 6];
+        chunk.copy_from_slice(&txs_bytes[i * 6..(i + 1) * 6]);
+        match digest_to_tx.get(&chunk) {
+            Some(tx_data) => matched.push(Some(tx_data.clone())),
+            None => {
+                matched.push(None);
+                missing.push(i as u32);
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        return ReconstructResult::Missing { indices: missing };
+    }
+
+    let tx_envelopes: Vec<Vec<u8>> = matched.into_iter().map(|x| x.unwrap()).collect();
+    let prev_hash: Hash256 = compact.previous_ledger_hash.0;
+    let full_xdr = build_full_tx_set_xdr(&prev_hash, compact.base_fee, &tx_envelopes);
+
+    let actual_hash = hash_tx_set(&full_xdr);
+    if actual_hash != tx_set_hash {
+        return ReconstructResult::HashMismatch {
+            reconstructed_hash: actual_hash,
+        };
+    }
+
+    ReconstructResult::Complete(full_xdr)
+}
+
+/// Encode a sorted ascending list of unique tx-set indices as the
+/// `differentially encoded indices` payload of `CompactTxSetGetTxs`.
+///
+/// First index → unsigned LEB128. Each subsequent index → unsigned LEB128
+/// of `(current - previous - 1)` (since strict ascending guarantees
+/// delta ≥ 1, encoding the offset saves a bit per delta).
+///
+/// The input MUST be sorted ascending and contain no duplicates. Pass an
+/// already-sorted slice; this function does not sort.
+pub fn encode_indices(indices: &[u32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut prev: Option<u32> = None;
+    for &i in indices {
+        let to_write = match prev {
+            None => i,
+            Some(p) => i.saturating_sub(p).saturating_sub(1),
+        };
+        write_uleb128(&mut out, to_write as u64);
+        prev = Some(i);
+    }
+    out
+}
+
+/// Inverse of `encode_indices`. Returns `None` if the input is malformed
+/// (truncated LEB128, or deltas that overflow u32).
+pub fn decode_indices(bytes: &[u8]) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    let mut cur = 0usize;
+    let mut prev: Option<u32> = None;
+    while cur < bytes.len() {
+        let (val, used) = read_uleb128(&bytes[cur..])?;
+        cur += used;
+        let next = match prev {
+            None => u32::try_from(val).ok()?,
+            Some(p) => {
+                let delta = u32::try_from(val).ok()?;
+                p.checked_add(delta)?.checked_add(1)?
+            }
+        };
+        out.push(next);
+        prev = Some(next);
+    }
+    Some(out)
+}
+
+/// Append unsigned LEB128 of `v` to `out`.
+fn write_uleb128(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let mut byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            byte |= 0x80;
+            out.push(byte);
+        } else {
+            out.push(byte);
+            return;
+        }
+    }
+}
+
+/// Decode an unsigned LEB128 value at the start of `bytes`. Returns
+/// `(value, bytes_consumed)`. `None` on truncation or overflow.
+fn read_uleb128(bytes: &[u8]) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let chunk = (b & 0x7f) as u64;
+        result = result.checked_add(chunk.checked_shl(shift)?)?;
+        if b & 0x80 == 0 {
+            return Some((result, i + 1));
+        }
+        shift = shift.checked_add(7)?;
+        if shift >= 64 {
+            return None;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,5 +823,162 @@ mod tests {
             b.txs.as_slice(),
             "different tx_set_hash keys must produce different siphash output"
         );
+    }
+
+    // ─── LEB128 differential index encoding ───
+
+    #[test]
+    fn test_leb128_indices_roundtrip_empty() {
+        let encoded = encode_indices(&[]);
+        assert!(encoded.is_empty());
+        assert_eq!(decode_indices(&encoded), Some(vec![]));
+    }
+
+    #[test]
+    fn test_leb128_indices_roundtrip_single() {
+        let encoded = encode_indices(&[42]);
+        assert_eq!(decode_indices(&encoded), Some(vec![42]));
+    }
+
+    #[test]
+    fn test_leb128_indices_roundtrip_dense() {
+        let input: Vec<u32> = (0..20).collect();
+        let encoded = encode_indices(&input);
+        // 20 deltas of 0 (after first), each one byte
+        assert_eq!(encoded.len(), 20);
+        assert_eq!(decode_indices(&encoded), Some(input));
+    }
+
+    #[test]
+    fn test_leb128_indices_roundtrip_sparse() {
+        let input: Vec<u32> = vec![0, 100, 200, 1000, 100_000, 1_000_000];
+        let encoded = encode_indices(&input);
+        assert_eq!(decode_indices(&encoded), Some(input));
+    }
+
+    #[test]
+    fn test_leb128_indices_decode_truncated() {
+        // 0x80 indicates more bytes to come, but no more bytes follow.
+        assert_eq!(decode_indices(&[0x80]), None);
+    }
+
+    // ─── Reconstruction ───
+
+    /// Build a CompactTxSet from a list of (tx_hash, _tx_data) pairs.
+    fn make_compact(
+        tx_set_hash: [u8; 32],
+        prev: [u8; 32],
+        base_fee: Option<i64>,
+        tx_hashes: &[TxHash],
+    ) -> CompactTxSet {
+        let bytes = build_compact_tx_set_xdr(&tx_set_hash, &prev, base_fee, tx_hashes);
+        CompactTxSet::from_xdr(&bytes, Limits::none()).unwrap()
+    }
+
+    #[test]
+    fn test_reconstruct_complete_empty_set() {
+        // Build an empty full tx set, derive its hash, build the matching
+        // compact, then reconstruct from an empty mempool.
+        let prev = [0x42; 32];
+        let full_xdr = build_full_tx_set_xdr(&prev, None, &[]);
+        let tx_set_hash = hash_tx_set(&full_xdr);
+
+        let compact = make_compact(tx_set_hash, prev, None, &[]);
+        let result = reconstruct_full_tx_set(&compact, std::iter::empty());
+        match result {
+            ReconstructResult::Complete(xdr) => {
+                assert_eq!(hash_tx_set(&xdr), tx_set_hash);
+                assert_eq!(xdr, full_xdr);
+            }
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_missing_when_mempool_empty() {
+        // Build a tx set with one tx; mempool is empty so reconstruction
+        // must report the index as missing.
+        let prev = [0x11; 32];
+        let tx_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let tx_hash = compute_tx_hash(&tx_data);
+
+        let full_xdr = build_full_tx_set_xdr(&prev, None, &[tx_data.clone()]);
+        let tx_set_hash = hash_tx_set(&full_xdr);
+
+        let compact = make_compact(tx_set_hash, prev, None, &[tx_hash]);
+        let result = reconstruct_full_tx_set(&compact, std::iter::empty());
+        match result {
+            ReconstructResult::Missing { indices } => assert_eq!(indices, vec![0]),
+            other => panic!("expected Missing, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_complete_when_mempool_has_all() {
+        let prev = [0x77; 32];
+        let tx_data = vec![1u8, 2, 3, 4, 5];
+        let tx_hash = compute_tx_hash(&tx_data);
+
+        let full_xdr = build_full_tx_set_xdr(&prev, None, &[tx_data.clone()]);
+        let tx_set_hash = hash_tx_set(&full_xdr);
+
+        let compact = make_compact(tx_set_hash, prev, None, &[tx_hash]);
+        let result =
+            reconstruct_full_tx_set(&compact, vec![(tx_hash, tx_data.clone())].into_iter());
+        match result {
+            ReconstructResult::Complete(xdr) => {
+                assert_eq!(hash_tx_set(&xdr), tx_set_hash);
+                assert_eq!(xdr, full_xdr);
+            }
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_complete_with_base_fee() {
+        let prev = [0x99; 32];
+        let tx_a = vec![10u8; 12];
+        let tx_b = vec![20u8; 16];
+        let hash_a = compute_tx_hash(&tx_a);
+        let hash_b = compute_tx_hash(&tx_b);
+
+        let full_xdr = build_full_tx_set_xdr(&prev, Some(12345), &[tx_a.clone(), tx_b.clone()]);
+        let tx_set_hash = hash_tx_set(&full_xdr);
+
+        let compact = make_compact(tx_set_hash, prev, Some(12345), &[hash_a, hash_b]);
+        let result = reconstruct_full_tx_set(
+            &compact,
+            vec![(hash_a, tx_a.clone()), (hash_b, tx_b.clone())].into_iter(),
+        );
+        match result {
+            ReconstructResult::Complete(xdr) => assert_eq!(hash_tx_set(&xdr), tx_set_hash),
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_missing_partial() {
+        let prev = [0x33; 32];
+        let tx_a = vec![0xAA; 8];
+        let tx_b = vec![0xBB; 8];
+        let tx_c = vec![0xCC; 8];
+        let hash_a = compute_tx_hash(&tx_a);
+        let hash_b = compute_tx_hash(&tx_b);
+        let hash_c = compute_tx_hash(&tx_c);
+
+        let full_xdr =
+            build_full_tx_set_xdr(&prev, None, &[tx_a.clone(), tx_b.clone(), tx_c.clone()]);
+        let tx_set_hash = hash_tx_set(&full_xdr);
+
+        let compact = make_compact(tx_set_hash, prev, None, &[hash_a, hash_b, hash_c]);
+        // Mempool only has tx_a and tx_c; tx_b is missing.
+        let result = reconstruct_full_tx_set(
+            &compact,
+            vec![(hash_a, tx_a.clone()), (hash_c, tx_c.clone())].into_iter(),
+        );
+        match result {
+            ReconstructResult::Missing { indices } => assert_eq!(indices, vec![1]),
+            other => panic!("expected Missing, got {:?}", other),
+        }
     }
 }

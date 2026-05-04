@@ -21,4 +21,8 @@ pub use pending_requests::{
     PendingRequest, PendingRequests, GETDATA_PEER_TIMEOUT, GETDATA_TOTAL_TIMEOUT,
 };
 pub use tx_buffer::{TxBuffer, TX_BUFFER_CAPACITY, TX_BUFFER_MAX_AGE};
-pub use txset::{build_tx_set_xdr, hash_tx_set, CachedTxSet, Hash256, TxSetCache};
+pub use txset::{
+    build_compact_tx_set_xdr, build_full_tx_set_xdr, build_tx_set_xdr, compact_tx_digest,
+    decode_indices, encode_indices, hash_tx_set, reconstruct_full_tx_set, CachedTxSet, Hash256,
+    ReconstructResult, TxSetCache,
+};

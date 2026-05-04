@@ -116,6 +116,43 @@ pub struct OverlayMetrics {
     /// overlay.flood.tx-batch-size — number of entries per INV batch
     pub flood_tx_batch_size_sum: AtomicU64,
     pub flood_tx_batch_size_count: AtomicU64,
+
+    // ═══ Compact TX Set message counters / byte gauges ═══
+    /// CompactTxSet announcements sent on the SCP stream
+    pub compact_announce_sent: AtomicU64,
+    pub compact_announce_bytes_sent: AtomicU64,
+    /// CompactTxSet announcements received on the SCP stream
+    pub compact_announce_recv: AtomicU64,
+    pub compact_announce_bytes_recv: AtomicU64,
+    /// CompactTxSetGet messages sent on the compact_txset stream
+    pub compact_get_sent: AtomicU64,
+    pub compact_get_bytes_sent: AtomicU64,
+    /// CompactTxSetGet messages received on the compact_txset stream
+    pub compact_get_recv: AtomicU64,
+    pub compact_get_bytes_recv: AtomicU64,
+    /// CompactTxSetGetTxs messages sent on the compact_txset stream
+    pub compact_get_txs_sent: AtomicU64,
+    pub compact_get_txs_bytes_sent: AtomicU64,
+    /// CompactTxSetGetTxs messages received on the compact_txset stream
+    pub compact_get_txs_recv: AtomicU64,
+    pub compact_get_txs_bytes_recv: AtomicU64,
+    /// CompactTxSetTxs (response) messages sent on the compact_txset stream
+    pub compact_txs_sent: AtomicU64,
+    pub compact_txs_bytes_sent: AtomicU64,
+    /// CompactTxSetTxs (response) messages received on the compact_txset stream
+    pub compact_txs_recv: AtomicU64,
+    pub compact_txs_bytes_recv: AtomicU64,
+
+    // ═══ Reconstructed full tx set sizes (sum/count/max in bytes) ═══
+    pub reconstructed_full_size_sum: AtomicU64,
+    pub reconstructed_full_size_count: AtomicU64,
+    pub reconstructed_full_size_max: AtomicU64,
+
+    // ═══ Reconstruction outcome counters ═══
+    pub compact_recon_complete: AtomicU64,
+    pub compact_recon_partial: AtomicU64,
+    pub compact_recon_hash_mismatch: AtomicU64,
+    pub compact_recon_failed_fallback_legacy: AtomicU64,
 }
 
 impl Default for OverlayMetrics {
@@ -162,6 +199,29 @@ impl Default for OverlayMetrics {
             flood_tx_pull_latency_count: AtomicU64::new(0),
             flood_tx_batch_size_sum: AtomicU64::new(0),
             flood_tx_batch_size_count: AtomicU64::new(0),
+            compact_announce_sent: AtomicU64::new(0),
+            compact_announce_bytes_sent: AtomicU64::new(0),
+            compact_announce_recv: AtomicU64::new(0),
+            compact_announce_bytes_recv: AtomicU64::new(0),
+            compact_get_sent: AtomicU64::new(0),
+            compact_get_bytes_sent: AtomicU64::new(0),
+            compact_get_recv: AtomicU64::new(0),
+            compact_get_bytes_recv: AtomicU64::new(0),
+            compact_get_txs_sent: AtomicU64::new(0),
+            compact_get_txs_bytes_sent: AtomicU64::new(0),
+            compact_get_txs_recv: AtomicU64::new(0),
+            compact_get_txs_bytes_recv: AtomicU64::new(0),
+            compact_txs_sent: AtomicU64::new(0),
+            compact_txs_bytes_sent: AtomicU64::new(0),
+            compact_txs_recv: AtomicU64::new(0),
+            compact_txs_bytes_recv: AtomicU64::new(0),
+            reconstructed_full_size_sum: AtomicU64::new(0),
+            reconstructed_full_size_count: AtomicU64::new(0),
+            reconstructed_full_size_max: AtomicU64::new(0),
+            compact_recon_complete: AtomicU64::new(0),
+            compact_recon_partial: AtomicU64::new(0),
+            compact_recon_hash_mismatch: AtomicU64::new(0),
+            compact_recon_failed_fallback_legacy: AtomicU64::new(0),
         }
     }
 }
@@ -223,6 +283,47 @@ impl OverlayMetrics {
             flood_tx_pull_latency_count: self.flood_tx_pull_latency_count.load(ORD),
             flood_tx_batch_size_sum: self.flood_tx_batch_size_sum.load(ORD),
             flood_tx_batch_size_count: self.flood_tx_batch_size_count.load(ORD),
+            compact_announce_sent: self.compact_announce_sent.load(ORD),
+            compact_announce_bytes_sent: self.compact_announce_bytes_sent.load(ORD),
+            compact_announce_recv: self.compact_announce_recv.load(ORD),
+            compact_announce_bytes_recv: self.compact_announce_bytes_recv.load(ORD),
+            compact_get_sent: self.compact_get_sent.load(ORD),
+            compact_get_bytes_sent: self.compact_get_bytes_sent.load(ORD),
+            compact_get_recv: self.compact_get_recv.load(ORD),
+            compact_get_bytes_recv: self.compact_get_bytes_recv.load(ORD),
+            compact_get_txs_sent: self.compact_get_txs_sent.load(ORD),
+            compact_get_txs_bytes_sent: self.compact_get_txs_bytes_sent.load(ORD),
+            compact_get_txs_recv: self.compact_get_txs_recv.load(ORD),
+            compact_get_txs_bytes_recv: self.compact_get_txs_bytes_recv.load(ORD),
+            compact_txs_sent: self.compact_txs_sent.load(ORD),
+            compact_txs_bytes_sent: self.compact_txs_bytes_sent.load(ORD),
+            compact_txs_recv: self.compact_txs_recv.load(ORD),
+            compact_txs_bytes_recv: self.compact_txs_bytes_recv.load(ORD),
+            reconstructed_full_size_sum: self.reconstructed_full_size_sum.load(ORD),
+            reconstructed_full_size_count: self.reconstructed_full_size_count.load(ORD),
+            reconstructed_full_size_max: self.reconstructed_full_size_max.swap(0, ORD),
+            compact_recon_complete: self.compact_recon_complete.load(ORD),
+            compact_recon_partial: self.compact_recon_partial.load(ORD),
+            compact_recon_hash_mismatch: self.compact_recon_hash_mismatch.load(ORD),
+            compact_recon_failed_fallback_legacy: self
+                .compact_recon_failed_fallback_legacy
+                .load(ORD),
+        }
+    }
+
+    /// Update the reconstructed_full_size_max with compare-and-swap.
+    pub fn update_reconstructed_full_size_max(&self, size: u64) {
+        let mut current = self.reconstructed_full_size_max.load(ORD);
+        while size > current {
+            match self.reconstructed_full_size_max.compare_exchange_weak(
+                current,
+                size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
         }
     }
 
@@ -292,6 +393,35 @@ pub struct MetricsSnapshot {
     pub flood_tx_pull_latency_count: u64,
     pub flood_tx_batch_size_sum: u64,
     pub flood_tx_batch_size_count: u64,
+
+    // Compact TX Set message counters / byte gauges
+    pub compact_announce_sent: u64,
+    pub compact_announce_bytes_sent: u64,
+    pub compact_announce_recv: u64,
+    pub compact_announce_bytes_recv: u64,
+    pub compact_get_sent: u64,
+    pub compact_get_bytes_sent: u64,
+    pub compact_get_recv: u64,
+    pub compact_get_bytes_recv: u64,
+    pub compact_get_txs_sent: u64,
+    pub compact_get_txs_bytes_sent: u64,
+    pub compact_get_txs_recv: u64,
+    pub compact_get_txs_bytes_recv: u64,
+    pub compact_txs_sent: u64,
+    pub compact_txs_bytes_sent: u64,
+    pub compact_txs_recv: u64,
+    pub compact_txs_bytes_recv: u64,
+
+    // Reconstructed full tx set sizes (sum/count/max in bytes)
+    pub reconstructed_full_size_sum: u64,
+    pub reconstructed_full_size_count: u64,
+    pub reconstructed_full_size_max: u64,
+
+    // Reconstruction outcome counters
+    pub compact_recon_complete: u64,
+    pub compact_recon_partial: u64,
+    pub compact_recon_hash_mismatch: u64,
+    pub compact_recon_failed_fallback_legacy: u64,
 }
 
 #[cfg(test)]

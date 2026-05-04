@@ -109,6 +109,18 @@ impl TxBuffer {
         self.buffer.len()
     }
 
+    /// Snapshot every (hash, data) pair currently in the buffer.
+    ///
+    /// Used by compact tx set reconstruction to derive 6-byte SipHash
+    /// digests over all known transactions. Skips expired entries.
+    pub fn snapshot(&self) -> Vec<([u8; 32], Vec<u8>)> {
+        self.buffer
+            .iter()
+            .filter(|(_, e)| e.added_at.elapsed() <= self.max_age)
+            .map(|(h, e)| (*h, e.data.clone()))
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
