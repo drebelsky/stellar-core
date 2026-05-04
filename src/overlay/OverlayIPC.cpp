@@ -329,44 +329,46 @@ OverlayIPC::broadcastSCP(SCPEnvelope const& envelope)
         return false;
     }
 
+    // Compact-set hash sources are independent across envelope types: the
+    // leader/non-leader filter applies to NOMINATE statements, the ballot-
+    // rounds filter applies to non-NOMINATE statements. Both can be enabled
+    // simultaneously; each contributes for the envelope type it covers.
     std::unordered_set<Hash> txSetHashes;
-    if (mLeaderNominationEnabled || mNonLeaderNominationEnabled)
+    bool const isNominate =
+        envelope.statement.pledges.type() == SCP_ST_NOMINATE;
+
+    if ((mLeaderNominationEnabled || mNonLeaderNominationEnabled) && isNominate)
     {
-        if (envelope.statement.pledges.type() == SCP_ST_NOMINATE)
+        auto values = getStellarValues(envelope.statement);
+        assertMessage(
+            values.has_value(),
+            "Failed to extract StellarValues from SCP envelope for "
+            "nomination");
+        for (auto const& sv : values.value())
         {
-            auto values = getStellarValues(envelope.statement);
-            assertMessage(
-                values.has_value(),
-                "Failed to extract StellarValues from SCP envelope for "
-                "nomination");
-            for (auto const& sv : values.value())
+            assertMessage(sv.ext.v() == STELLAR_VALUE_SIGNED,
+                          "Expected signed StellarValue in nomination");
+            if (sv.ext.lcValueSignature().nodeID == mNodePublicKey)
             {
-                assertMessage(sv.ext.v() == STELLAR_VALUE_SIGNED,
-                              "Expected signed StellarValue in nomination");
-                if (sv.ext.lcValueSignature().nodeID == mNodePublicKey)
-                {
-                    if (mLeaderNominationEnabled)
-                    {
-                        txSetHashes.insert(sv.txSetHash);
-                    }
-                }
-                else if (mNonLeaderNominationEnabled)
+                if (mLeaderNominationEnabled)
                 {
                     txSetHashes.insert(sv.txSetHash);
                 }
             }
+            else if (mNonLeaderNominationEnabled)
+            {
+                txSetHashes.insert(sv.txSetHash);
+            }
         }
     }
-    else if (mBallotRoundsEnabled)
+
+    if (mBallotRoundsEnabled && !isNominate)
     {
-        if (envelope.statement.pledges.type() != SCP_ST_NOMINATE)
-        {
-            auto hashes = getTxSetHashes(envelope);
-            assertMessage(hashes.has_value(),
-                          "Failed to extract TX set hashes from SCP envelope");
-            std::copy(hashes->begin(), hashes->end(),
-                      std::inserter(txSetHashes, txSetHashes.end()));
-        }
+        auto hashes = getTxSetHashes(envelope);
+        assertMessage(hashes.has_value(),
+                      "Failed to extract TX set hashes from SCP envelope");
+        std::copy(hashes->begin(), hashes->end(),
+                  std::inserter(txSetHashes, txSetHashes.end()));
     }
 
     IPCMessage msg;

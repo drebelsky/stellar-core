@@ -380,27 +380,46 @@ pub fn compact_tx_digest(tx_set_hash: &Hash256, tx_hash: &TxHash) -> [u8; 6] {
 }
 
 /// Try to reconstruct a full `GeneralizedTransactionSet` from a compact
-/// announcement plus an iterable of known `(tx_hash, tx_envelope_xdr)`
-/// pairs (typically the local TxBuffer / mempool snapshot).
-pub fn reconstruct_full_tx_set<I>(compact: &CompactTxSet, known_txs: I) -> ReconstructResult
+/// announcement plus an iteration over locally-known transactions.
+///
+/// `visit_known` is invoked exactly once and is expected to call its
+/// argument with each `(tx_hash, tx_envelope_xdr)` pair that should be
+/// considered. Typical caller: `|cb| tx_buffer.for_each_unexpired(cb)`.
+///
+/// The function precomputes the set of 6-byte digests it needs (from
+/// `compact.txs`), so tx envelopes whose digest is irrelevant are visited
+/// without being cloned.
+pub fn reconstruct_full_tx_set<F>(compact: &CompactTxSet, visit_known: F) -> ReconstructResult
 where
-    I: IntoIterator<Item = (TxHash, Vec<u8>)>,
+    F: FnOnce(&mut dyn FnMut(&[u8; 32], &[u8])),
 {
     let tx_set_hash: Hash256 = compact.tx_set_hash.0;
 
-    // Index known txs by their 6-byte digest.
-    let mut digest_to_tx: HashMap<[u8; 6], Vec<u8>> = HashMap::new();
-    for (tx_hash, tx_data) in known_txs {
-        let digest = compact_tx_digest(&tx_set_hash, &tx_hash);
-        digest_to_tx.insert(digest, tx_data);
-    }
-
-    // Walk compact.txs in 6-byte chunks.
+    // Pre-compute the digests we actually need so we only clone matching
+    // tx envelopes.
     let txs_bytes = compact.txs.as_slice();
     let n = txs_bytes.len() / 6;
+    let mut needed: std::collections::HashSet<[u8; 6]> =
+        std::collections::HashSet::with_capacity(n);
+    for i in 0..n {
+        let mut chunk = [0u8; 6];
+        chunk.copy_from_slice(&txs_bytes[i * 6..(i + 1) * 6]);
+        needed.insert(chunk);
+    }
+
+    // Walk known txs. Compute each tx's digest; clone its data only when
+    // the digest is one we need.
+    let mut digest_to_tx: HashMap<[u8; 6], Vec<u8>> = HashMap::new();
+    visit_known(&mut |tx_hash, tx_data| {
+        let digest = compact_tx_digest(&tx_set_hash, tx_hash);
+        if needed.contains(&digest) {
+            digest_to_tx.entry(digest).or_insert_with(|| tx_data.to_vec());
+        }
+    });
+
+    // Walk compact.txs in 6-byte chunks again, this time filling slots.
     let mut matched: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
     let mut missing: Vec<u32> = Vec::new();
-
     for i in 0..n {
         let mut chunk = [0u8; 6];
         chunk.copy_from_slice(&txs_bytes[i * 6..(i + 1) * 6]);
@@ -902,13 +921,24 @@ mod tests {
         let tx_set_hash = hash_tx_set(&full_xdr);
 
         let compact = make_compact(tx_set_hash, prev, None, &[]);
-        let result = reconstruct_full_tx_set(&compact, std::iter::empty());
+        let result = reconstruct_full_tx_set(&compact, |_visit| {});
         match result {
             ReconstructResult::Complete(xdr) => {
                 assert_eq!(hash_tx_set(&xdr), tx_set_hash);
                 assert_eq!(xdr, full_xdr);
             }
             other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    /// Build a closure-style visitor over `(hash, data)` pairs for tests.
+    fn visit_pairs<'a>(
+        pairs: &'a [(TxHash, Vec<u8>)],
+    ) -> impl FnOnce(&mut dyn FnMut(&[u8; 32], &[u8])) + 'a {
+        move |cb| {
+            for (h, d) in pairs {
+                cb(h, d);
+            }
         }
     }
 
@@ -924,7 +954,7 @@ mod tests {
         let tx_set_hash = hash_tx_set(&full_xdr);
 
         let compact = make_compact(tx_set_hash, prev, None, &[tx_hash]);
-        let result = reconstruct_full_tx_set(&compact, std::iter::empty());
+        let result = reconstruct_full_tx_set(&compact, |_visit| {});
         match result {
             ReconstructResult::Missing { indices, matched } => {
                 assert_eq!(indices, vec![0]);
@@ -945,8 +975,8 @@ mod tests {
         let tx_set_hash = hash_tx_set(&full_xdr);
 
         let compact = make_compact(tx_set_hash, prev, None, &[tx_hash]);
-        let result =
-            reconstruct_full_tx_set(&compact, vec![(tx_hash, tx_data.clone())].into_iter());
+        let pairs = vec![(tx_hash, tx_data.clone())];
+        let result = reconstruct_full_tx_set(&compact, visit_pairs(&pairs));
         match result {
             ReconstructResult::Complete(xdr) => {
                 assert_eq!(hash_tx_set(&xdr), tx_set_hash);
@@ -968,10 +998,8 @@ mod tests {
         let tx_set_hash = hash_tx_set(&full_xdr);
 
         let compact = make_compact(tx_set_hash, prev, Some(12345), &[hash_a, hash_b]);
-        let result = reconstruct_full_tx_set(
-            &compact,
-            vec![(hash_a, tx_a.clone()), (hash_b, tx_b.clone())].into_iter(),
-        );
+        let pairs = vec![(hash_a, tx_a.clone()), (hash_b, tx_b.clone())];
+        let result = reconstruct_full_tx_set(&compact, visit_pairs(&pairs));
         match result {
             ReconstructResult::Complete(xdr) => assert_eq!(hash_tx_set(&xdr), tx_set_hash),
             other => panic!("expected Complete, got {:?}", other),
@@ -994,10 +1022,8 @@ mod tests {
 
         let compact = make_compact(tx_set_hash, prev, None, &[hash_a, hash_b, hash_c]);
         // Mempool only has tx_a and tx_c; tx_b is missing.
-        let result = reconstruct_full_tx_set(
-            &compact,
-            vec![(hash_a, tx_a.clone()), (hash_c, tx_c.clone())].into_iter(),
-        );
+        let pairs = vec![(hash_a, tx_a.clone()), (hash_c, tx_c.clone())];
+        let result = reconstruct_full_tx_set(&compact, visit_pairs(&pairs));
         match result {
             ReconstructResult::Missing { indices, matched } => {
                 assert_eq!(indices, vec![1]);
@@ -1008,5 +1034,72 @@ mod tests {
             }
             other => panic!("expected Missing, got {:?}", other),
         }
+    }
+
+    // ─── XDR round-trip regression tests (m6) ───
+    //
+    // Cross-check that the hand-rolled wire builders produce well-formed
+    // XDR that parses back to a typed value and re-serializes byte-for-byte
+    // identical. This guards against schema drift in protocol bumps —
+    // adding a new TransactionPhase variant or CompactTxSetMessage variant
+    // would force an update here too.
+
+    use stellar_xdr::TransactionEnvelope;
+
+    /// Round-tripping `bytes` through the typed XDR parser and re-encoder
+    /// should produce identical bytes if `bytes` is a valid encoding of `T`.
+    fn assert_xdr_roundtrip<T>(bytes: &[u8])
+    where
+        T: stellar_xdr::ReadXdr + stellar_xdr::WriteXdr + std::fmt::Debug,
+    {
+        let parsed = T::from_xdr(bytes, Limits::none())
+            .unwrap_or_else(|e| panic!("typed parser rejected hand-rolled XDR: {e}"));
+        let reencoded = parsed
+            .to_xdr(Limits::none())
+            .expect("typed encoder failed on parsed value");
+        assert_eq!(
+            bytes,
+            reencoded.as_slice(),
+            "hand-rolled XDR ≠ typed re-encode (parsed: {:?})",
+            parsed
+        );
+    }
+
+    #[test]
+    fn test_build_full_tx_set_xdr_roundtrips_empty() {
+        let bytes = build_full_tx_set_xdr(&[0xAB; 32], None, &[]);
+        assert_xdr_roundtrip::<GeneralizedTransactionSet>(&bytes);
+    }
+
+    #[test]
+    fn test_build_full_tx_set_xdr_roundtrips_with_tx() {
+        // Use a default TransactionEnvelope so we don't have to construct
+        // every nested struct by hand. Re-serialize it to get the wire
+        // bytes the hand-rolled builder expects.
+        let env = TransactionEnvelope::default();
+        let env_xdr = env.to_xdr(Limits::none()).unwrap();
+        let bytes = build_full_tx_set_xdr(&[0xCD; 32], Some(123), &[env_xdr]);
+        assert_xdr_roundtrip::<GeneralizedTransactionSet>(&bytes);
+    }
+
+    #[test]
+    fn test_build_full_tx_set_xdr_roundtrips_multi_tx() {
+        let env_xdr = TransactionEnvelope::default().to_xdr(Limits::none()).unwrap();
+        let bytes = build_full_tx_set_xdr(
+            &[0xEF; 32],
+            None,
+            &[env_xdr.clone(), env_xdr.clone(), env_xdr.clone()],
+        );
+        assert_xdr_roundtrip::<GeneralizedTransactionSet>(&bytes);
+    }
+
+    #[test]
+    fn test_build_compact_tx_set_xdr_roundtrips() {
+        let bytes = build_compact_tx_set_xdr(&[0x11; 32], &[0x22; 32], None, &[]);
+        assert_xdr_roundtrip::<CompactTxSet>(&bytes);
+
+        let bytes =
+            build_compact_tx_set_xdr(&[0x33; 32], &[0x44; 32], Some(987), &[[0x55; 32]; 4]);
+        assert_xdr_roundtrip::<CompactTxSet>(&bytes);
     }
 }

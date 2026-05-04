@@ -162,6 +162,9 @@ pub struct OverlayMetrics {
     /// `PendingReconstruction` entries waiting on a `GET_TXS` response that
     /// timed out (housekeeping sweep marked them failed and fell back).
     pub compact_reconstruction_timeout: AtomicU64,
+    /// `COMPACT_TX_SET_GET` requests resent to the next announcer because the
+    /// first announcer timed out, disconnected, or the initial send failed.
+    pub compact_get_retry: AtomicU64,
 }
 
 impl Default for OverlayMetrics {
@@ -233,6 +236,7 @@ impl Default for OverlayMetrics {
             compact_recon_failed_fallback_legacy: AtomicU64::new(0),
             compact_get_timeout: AtomicU64::new(0),
             compact_reconstruction_timeout: AtomicU64::new(0),
+            compact_get_retry: AtomicU64::new(0),
         }
     }
 }
@@ -321,6 +325,7 @@ impl OverlayMetrics {
                 .load(ORD),
             compact_get_timeout: self.compact_get_timeout.load(ORD),
             compact_reconstruction_timeout: self.compact_reconstruction_timeout.load(ORD),
+            compact_get_retry: self.compact_get_retry.load(ORD),
         }
     }
 
@@ -439,6 +444,7 @@ pub struct MetricsSnapshot {
     // Pending-state housekeeping timeouts
     pub compact_get_timeout: u64,
     pub compact_reconstruction_timeout: u64,
+    pub compact_get_retry: u64,
 }
 
 #[cfg(test)]
