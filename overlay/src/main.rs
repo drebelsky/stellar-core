@@ -503,9 +503,16 @@ impl App {
         // Create libp2p QUIC overlay for SCP + TX + TxSet (unified, independent streams)
         let libp2p_keypair = Libp2pKeypair::generate_ed25519();
         let metrics = Arc::new(OverlayMetrics::new());
-        let (libp2p_handle, libp2p_event_rx, tx_event_rx, libp2p_overlay) =
-            create_overlay(libp2p_keypair, Arc::clone(&metrics))
-                .map_err(|e| format!("Failed to create libp2p overlay: {}", e))?;
+        // tx_set_cache is shared with the libp2p overlay so its receive path
+        // can short-circuit reconstruction when the full set is already cached.
+        let tx_set_cache: Arc<RwLock<TxSetCache>> =
+            Arc::new(RwLock::new(TxSetCache::new(100)));
+        let (libp2p_handle, libp2p_event_rx, tx_event_rx, libp2p_overlay) = create_overlay(
+            libp2p_keypair,
+            Arc::clone(&metrics),
+            Arc::clone(&tx_set_cache),
+        )
+        .map_err(|e| format!("Failed to create libp2p overlay: {}", e))?;
 
         // Use peer_port + 1000 for libp2p QUIC to avoid collision with legacy TCP
         let libp2p_port = config.peer_port + 1000;
@@ -528,7 +535,7 @@ impl App {
             config,
             core_ipc,
             overlay_handle,
-            tx_set_cache: Arc::new(RwLock::new(TxSetCache::new(100))),
+            tx_set_cache,
             pushed_tx_sets: Arc::new(RwLock::new(HashSet::new())),
             current_ledger_seq: Arc::new(RwLock::new(0)),
             libp2p_handle,
@@ -1884,7 +1891,7 @@ mod tests {
 
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         let result = resolve_and_dial("127.0.0.1:11625", 11625, &local_addrs, &handle).await;
         assert!(
@@ -1898,7 +1905,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         let result = resolve_and_dial("unresolvable.invalid", 11625, &local_addrs, &handle).await;
         assert!(
@@ -1913,7 +1920,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         let result = resolve_and_dial("10.255.255.1:11625", 11625, &local_addrs, &handle).await;
         assert!(
@@ -1928,7 +1935,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         let result = resolve_and_dial("localhost", 11625, &local_addrs, &handle).await;
         assert!(
@@ -1953,7 +1960,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         // This should return immediately without spawning a task
         spawn_peer_retry_task(
@@ -1973,7 +1980,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         // Use tokio::time::pause() so the test doesn't actually sleep 2+ seconds
         tokio::time::pause();
@@ -2002,7 +2009,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         tokio::time::pause();
 
@@ -2038,11 +2045,11 @@ mod tests {
         let kp3 = Libp2pKeypair::generate_ed25519();
 
         let (handle1, mut events1, _tx1, overlay1) =
-            create_overlay(kp1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(kp1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, _tx2, overlay2) =
-            create_overlay(kp2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(kp2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
         let (handle3, mut events3, _tx3, overlay3) =
-            create_overlay(kp3, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(kp3, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         // Start all three on different ports
         let port1: u16 = 18501;
@@ -2124,7 +2131,7 @@ mod tests {
         let local_addrs = Arc::new(RwLock::new(HashSet::new()));
         let keypair = Libp2pKeypair::generate_ed25519();
         let (handle, _evt_rx, _tx_rx, _overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(TxSetCache::new(100)))).unwrap();
 
         tokio::time::pause();
 

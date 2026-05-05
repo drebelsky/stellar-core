@@ -446,6 +446,11 @@ struct PendingCompactGet {
 /// have all the txs (some 6-byte SipHash digests don't match). We then send
 /// `COMPACT_TX_SET_GET_TXS` to the announcing peer for the missing indices
 /// and stash this struct keyed on `tx_set_hash` until the response arrives.
+///
+/// `tried` accumulates every peer we've sent a GET_TXS to for this hash, so
+/// `retry_compact_get_txs_or_fallback` can advance through announcers if
+/// the current peer disconnects mid-reconstruction (mirrors
+/// `PendingCompactGet`).
 struct PendingReconstruction {
     /// The CompactTxSet announcement we're trying to reconstruct from.
     compact: stellar_xdr::CompactTxSet,
@@ -453,9 +458,15 @@ struct PendingReconstruction {
     /// XDR bytes. `None` indicates the slot is missing and is included in
     /// the outstanding GET_TXS request.
     matched: Vec<Option<Vec<u8>>>,
-    /// Peer we requested the missing txs from.
-    requested_from: PeerId,
-    /// When the GET_TXS request was issued (for latency / cleanup).
+    /// The peer the most recent GET_TXS was sent to (used by the disconnect
+    /// filter and as the `from` field on the success-path TxSetReceived).
+    current_peer: PeerId,
+    /// All peers we've sent a GET_TXS to for this hash, including the
+    /// current one. `retry_compact_get_txs_or_fallback` skips these when
+    /// picking the next announcer.
+    tried: HashSet<PeerId>,
+    /// When the most recent GET_TXS request was issued (for timeout sweep).
+    /// Refreshed on each retry.
     requested_at: Instant,
 }
 
@@ -508,6 +519,10 @@ struct SharedState {
     tx_buffer: RwLock<TxBuffer>,
     /// Overlay metrics (shared with App for IPC reporting)
     metrics: Arc<OverlayMetrics>,
+    /// Shared with `App` in main.rs. Read in `handle_received_compact_set`
+    /// to skip reconstruction when the full tx set is already cached
+    /// (either built locally or received earlier).
+    tx_set_cache: Arc<RwLock<crate::flood::TxSetCache>>,
 }
 
 impl SharedState {
@@ -516,6 +531,7 @@ impl SharedState {
         tx_event_tx: mpsc::Sender<OverlayEvent>,
         control: Control,
         metrics: Arc<OverlayMetrics>,
+        tx_set_cache: Arc<RwLock<crate::flood::TxSetCache>>,
     ) -> Self {
         Self {
             peer_streams: RwLock::new(HashMap::new()),
@@ -556,6 +572,7 @@ impl SharedState {
             pending_getdata: RwLock::new(PendingRequests::new()),
             tx_buffer: RwLock::new(TxBuffer::new()),
             metrics,
+            tx_set_cache,
         }
     }
 }
@@ -578,6 +595,7 @@ pub struct StellarOverlay {
 pub fn create_overlay(
     keypair: Keypair,
     metrics: Arc<OverlayMetrics>,
+    tx_set_cache: Arc<RwLock<crate::flood::TxSetCache>>,
 ) -> Result<
     (
         OverlayHandle,
@@ -628,6 +646,7 @@ pub fn create_overlay(
         tx_event_tx,
         control.clone(),
         metrics,
+        tx_set_cache,
     ));
 
     let overlay = StellarOverlay {
@@ -953,19 +972,45 @@ impl StellarOverlay {
                             retry_compact_get_or_fallback(&state, hash, tried).await;
                         });
                     }
-                    // Clean up pending compact reconstructions waiting on this peer
-                    {
+                    // Take pending compact reconstructions waiting on this peer
+                    // and schedule a retry to the next un-tried announcer for
+                    // each. Herder calls requestTxSet exactly once per hash
+                    // (PendingEnvelopes::startFetch), so we MUST recover —
+                    // either via a fresh GET_TXS to another announcer or via
+                    // mark_compact_failed_and_fallback (legacy fetch).
+                    let recon_to_retry: Vec<([u8; 32], PendingReconstruction)> = {
                         let mut pending =
                             self.state.pending_compact_reconstructions.write().await;
-                        let before_len = pending.len();
-                        pending.retain(|_hash, p| p.requested_from != peer_id);
-                        let removed = before_len - pending.len();
-                        if removed > 0 {
-                            info!(
-                                "Removed {} pending compact reconstructions for disconnected peer {}",
-                                removed, peer_id
-                            );
+                        let hashes_for_peer: Vec<[u8; 32]> = pending
+                            .iter()
+                            .filter_map(|(h, p)| {
+                                if p.current_peer == peer_id {
+                                    Some(*h)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let mut taken = Vec::new();
+                        for h in hashes_for_peer {
+                            if let Some(p) = pending.remove(&h) {
+                                taken.push((h, p));
+                            }
                         }
+                        taken
+                    };
+                    if !recon_to_retry.is_empty() {
+                        info!(
+                            "Removed {} pending compact reconstructions for disconnected peer {} (will retry)",
+                            recon_to_retry.len(),
+                            peer_id
+                        );
+                    }
+                    for (hash, pending) in recon_to_retry {
+                        let state = Arc::clone(&self.state);
+                        tokio::spawn(async move {
+                            retry_compact_get_txs_or_fallback(&state, hash, pending).await;
+                        });
                     }
                     // Drop this peer from any compact_announcers entries
                     {
@@ -1906,6 +1951,7 @@ async fn handle_inbound_scp_streams(mut incoming: IncomingStreams, state: Arc<Sh
 
                         // Frame format: 4-byte big-endian tag + payload
                         if frame.len() < 4 {
+                            state.metrics.error_read.fetch_add(1, Ordering::Relaxed);
                             warn!(
                                 "SCP_FRAME_INVALID: Frame from {} too short ({} bytes)",
                                 peer_id,
@@ -2659,6 +2705,25 @@ async fn handle_received_compact_set(
         }
     }
 
+    // M1: Skip reconstruction (and the duplicate `TxSetReceived` it would
+    // emit) if the full tx set is already cached. This catches both the
+    // "we built it locally and Core called CacheTxSet" case and the
+    // "a previous announcer's response already filled the cache" case
+    // (e.g. a slow peer's response arrives after we successfully retried
+    // to a different announcer). Announcer recording above stays — the
+    // peer remains a viable source if the cache later evicts.
+    if state.tx_set_cache.read().await.get(&hash).is_some() {
+        state
+            .metrics
+            .compact_recon_skip_cached
+            .fetch_add(1, Ordering::Relaxed);
+        debug!(
+            "COMPACT_RECON_SKIP_CACHED: {:02x?}... already in tx_set_cache",
+            &hash[..4]
+        );
+        return;
+    }
+
     // Skip the rest if a reconstruction is already in flight for this hash.
     // The second peer is now in `compact_announcers` and will be available as
     // a fallback target if the first GET_TXS times out (see M3 retry logic).
@@ -2678,10 +2743,24 @@ async fn handle_received_compact_set(
     // Run reconstruction directly against the tx buffer — the closure
     // form lets us avoid cloning every buffer entry. The buffer is held
     // under a read lock for the duration of the digest pass, which is
-    // CPU-bound and brief.
+    // CPU-bound and brief. M3: tokio's RwLock is writer-preferring, so a
+    // long pass here can stall the hot tx_buffer.write path on TX_RECV;
+    // sample the duration so the trade-off can be evaluated empirically.
     let result = {
         let buffer = state.tx_buffer.read().await;
-        reconstruct_full_tx_set(&compact, |visit| buffer.for_each_unexpired(visit))
+        let t0 = Instant::now();
+        let r = reconstruct_full_tx_set(&compact, |visit| buffer.for_each_unexpired(visit));
+        let us = t0.elapsed().as_micros() as u64;
+        state
+            .metrics
+            .compact_recon_lock_hold_us_sum
+            .fetch_add(us, Ordering::Relaxed);
+        state
+            .metrics
+            .compact_recon_lock_hold_us_count
+            .fetch_add(1, Ordering::Relaxed);
+        state.metrics.update_compact_recon_lock_hold_us_max(us);
+        r
     };
     match result {
         ReconstructResult::Complete(full_xdr) => {
@@ -2729,13 +2808,16 @@ async fn handle_received_compact_set(
             // `reconstruct_full_tx_set` from a single buffer snapshot; reuse
             // it directly instead of redoing the digest match.
             {
+                let mut tried = HashSet::new();
+                tried.insert(peer_id.clone());
                 let mut pending = state.pending_compact_reconstructions.write().await;
                 pending.insert(
                     hash,
                     PendingReconstruction {
                         compact,
                         matched,
-                        requested_from: peer_id.clone(),
+                        current_peer: peer_id.clone(),
+                        tried,
                         requested_at: Instant::now(),
                     },
                 );
@@ -2917,7 +2999,7 @@ async fn handle_received_compact_txs(
     if let Err(e) = state.event_tx.send(OverlayEvent::TxSetReceived {
         hash,
         data: full_xdr,
-        from: pending.requested_from,
+        from: pending.current_peer,
     }) {
         warn!("Failed to forward reconstructed TxSetReceived: {}", e);
     }
@@ -3023,6 +3105,130 @@ async fn retry_compact_get_or_fallback(
                 e
             );
             state.pending_compact_get.write().await.remove(&hash);
+            mark_compact_failed_and_fallback(state, hash).await;
+        }
+    }
+}
+
+/// Retry an in-flight reconstruction's `COMPACT_TX_SET_GET_TXS` against the
+/// next un-tried connected announcer for `hash`. Used by the disconnect
+/// handler when the peer we'd already asked for missing txs goes away —
+/// without this, Herder would be left waiting (it calls `requestTxSet`
+/// exactly once; see `PendingEnvelopes::startFetch`).
+///
+/// `pending` is moved in: the caller has already removed the entry from
+/// `pending_compact_reconstructions`. We rebuild the missing-indices vector
+/// from `pending.matched`, refresh `current_peer`/`tried`/`requested_at`,
+/// and re-insert. If no fresh announcer is available or the new send
+/// fails, we fall back to legacy via `mark_compact_failed_and_fallback`.
+async fn retry_compact_get_txs_or_fallback(
+    state: &Arc<SharedState>,
+    hash: [u8; 32],
+    pending: PendingReconstruction,
+) {
+    // Find the next connected announcer not in pending.tried.
+    let next_peer: Option<PeerId> = {
+        let announcers = state.compact_announcers.read().await;
+        let streams = state.peer_streams.read().await;
+        announcers.peek(&hash).and_then(|peers| {
+            peers
+                .iter()
+                .find(|p| !pending.tried.contains(p) && streams.contains_key(p))
+                .cloned()
+        })
+    };
+
+    let peer = match next_peer {
+        Some(p) => p,
+        None => {
+            debug!(
+                "COMPACT_GET_TXS_NO_RETRY_PEER: {:02x?}... exhausted announcers — falling back to legacy",
+                &hash[..4]
+            );
+            mark_compact_failed_and_fallback(state, hash).await;
+            return;
+        }
+    };
+
+    // Rebuild missing-indices from the current matched vector. `matched` is
+    // walked in order, so the result is naturally sorted ascending.
+    let missing_indices: Vec<u32> = pending
+        .matched
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| if slot.is_none() { Some(i as u32) } else { None })
+        .collect();
+
+    if missing_indices.is_empty() {
+        // Shouldn't happen — we wouldn't be in pending_compact_reconstructions
+        // if every slot were filled. Defensive: log and drop.
+        warn!(
+            "COMPACT_GET_TXS_RETRY_NO_MISSING: {:02x?}... has no missing slots — dropping",
+            &hash[..4]
+        );
+        return;
+    }
+
+    // Re-insert with refreshed state. tried accumulates prior attempts plus
+    // this one.
+    let mut tried = pending.tried;
+    tried.insert(peer.clone());
+    state.pending_compact_reconstructions.write().await.insert(
+        hash,
+        PendingReconstruction {
+            compact: pending.compact,
+            matched: pending.matched,
+            current_peer: peer.clone(),
+            tried,
+            requested_at: Instant::now(),
+        },
+    );
+
+    let encoded = crate::flood::encode_indices(&missing_indices);
+    let frame = build_compact_msg_set_get_txs(&hash, &encoded);
+    let frame_len = frame.len();
+    match send_to_peer_stream(state, peer.clone(), StreamType::CompactTxSet, &frame).await {
+        Ok(_) => {
+            state
+                .metrics
+                .compact_get_txs_retry
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .compact_get_txs_sent
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .compact_get_txs_bytes_sent
+                .fetch_add(frame_len as u64, Ordering::Relaxed);
+            state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .byte_write
+                .fetch_add(frame_len as u64, Ordering::Relaxed);
+            info!(
+                "COMPACT_GET_TXS_RETRY: Re-requested {} missing txs for {:02x?}... from announcer {}",
+                missing_indices.len(),
+                &hash[..4],
+                peer
+            );
+        }
+        Err(e) => {
+            state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                "COMPACT_GET_TXS_RETRY_SEND_FAIL: {:02x?}... to {}: {} — falling back to legacy",
+                &hash[..4],
+                peer,
+                e
+            );
+            // Drop the just-inserted entry and fall back. Leaving it would
+            // make the timeout sweep think we're still waiting on a peer
+            // (we're not — the send failed), and Herder would stall.
+            state
+                .pending_compact_reconstructions
+                .write()
+                .await
+                .remove(&hash);
             mark_compact_failed_and_fallback(state, hash).await;
         }
     }
@@ -3180,6 +3386,16 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
                 .metrics
                 .compact_reconstruction_timeout
                 .fetch_add(timed_out_recon.len() as u64, Ordering::Relaxed);
+            // M4: Mark these hashes failed synchronously, before spawning
+            // the legacy fallback. If we wait until the spawn runs, a
+            // concurrent fetch_txset_compact_first(hash) between this point
+            // and the spawn could see no pending entry, no compact_failed
+            // entry, walk the announcer list, and start a redundant compact
+            // GET that races against the legacy fetch.
+            let mut failed = state.compact_failed.write().await;
+            for h in &timed_out_recon {
+                failed.put(*h, ());
+            }
         }
         for hash in timed_out_recon {
             warn!(
@@ -3338,7 +3554,10 @@ async fn fetch_txset_compact_first(state: &Arc<SharedState>, hash: [u8; 32]) {
         return;
     }
 
-    // Dedup against pending compact GET and pending legacy fetch.
+    // Dedup against pending compact GET (live peer only) and pending legacy
+    // fetch. If a stale `pending_compact_get` entry exists for a now-
+    // disconnected peer, we'll preserve its `tried` set below so the next
+    // attempt doesn't re-pick already-failed peers.
     {
         let pending_compact = state.pending_compact_get.read().await;
         if let Some(pcg) = pending_compact.get(&hash) {
@@ -3366,30 +3585,58 @@ async fn fetch_txset_compact_first(state: &Arc<SharedState>, hash: [u8; 32]) {
         }
     }
 
-    // Pick a connected announcer.
+    // Take any prior `pending_compact_get` entry for this hash so its
+    // `tried` set survives into the new attempt. The dedup branch above
+    // already returned early if the recorded peer was still connected, so
+    // anything we find here is for a disconnected peer (or the disconnect
+    // cleanup raced ahead).
+    let prior_tried: HashSet<PeerId> = state
+        .pending_compact_get
+        .write()
+        .await
+        .remove(&hash)
+        .map(|pcg| pcg.tried)
+        .unwrap_or_default();
+
+    // Pick a connected announcer that we haven't already tried.
     let chosen_peer = {
         let mut announcers = state.compact_announcers.write().await;
         let streams = state.peer_streams.read().await;
-        let connected: Option<PeerId> = announcers
-            .get(&hash)
-            .and_then(|peers| peers.iter().find(|p| streams.contains_key(p)).cloned());
-        connected
+        announcers.get(&hash).and_then(|peers| {
+            peers
+                .iter()
+                .find(|p| streams.contains_key(p) && !prior_tried.contains(p))
+                .cloned()
+        })
     };
 
     let peer = match chosen_peer {
         Some(p) => p,
         None => {
-            debug!(
-                "COMPACT_NO_ANNOUNCER: No connected announcer for {:02x?}... — using legacy fetch",
-                &hash[..4]
-            );
-            fetch_txset_legacy(state, hash).await;
+            // No fresh announcer (or none of them are connected). If we had
+            // any tried history, hand off to the retry helper which falls
+            // back to legacy on exhaustion. Otherwise go straight to legacy.
+            if prior_tried.is_empty() {
+                debug!(
+                    "COMPACT_NO_ANNOUNCER: No connected announcer for {:02x?}... — using legacy fetch",
+                    &hash[..4]
+                );
+                fetch_txset_legacy(state, hash).await;
+            } else {
+                debug!(
+                    "COMPACT_GET_EXHAUSTED: {:02x?}... no fresh announcers (tried {}) — falling back to legacy",
+                    &hash[..4],
+                    prior_tried.len()
+                );
+                mark_compact_failed_and_fallback(state, hash).await;
+            }
             return;
         }
     };
 
-    // Record pending compact GET.
-    let mut tried = HashSet::new();
+    // Record pending compact GET — merge the freshly-chosen peer into the
+    // accumulated tried set so future timeouts don't re-pick it.
+    let mut tried = prior_tried;
     tried.insert(peer.clone());
     state.pending_compact_get.write().await.insert(
         hash,
@@ -3698,7 +3945,7 @@ mod tests {
     async fn test_overlay_creation() {
         let keypair = Keypair::generate_ed25519();
         let (handle, _events, _tx_events, overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let overlay_task = tokio::spawn(async move {
             overlay.run("127.0.0.1", 0).await;
@@ -3719,9 +3966,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, mut events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, _tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19101;
         let overlay1_task = tokio::spawn(async move {
@@ -3776,9 +4023,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, mut events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, _tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19201;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -3841,9 +4088,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19301;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -3956,9 +4203,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19501;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4067,9 +4314,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, _events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19401;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4124,9 +4371,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, mut events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, _tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19601;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4208,9 +4455,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, _events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19701;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4270,9 +4517,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, _events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let listen_port = 19801;
         tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4330,11 +4577,11 @@ mod tests {
         let keypair_c = Keypair::generate_ed25519();
 
         let (handle_a, _events_a, _tx_events_a, overlay_a) =
-            create_overlay(keypair_a, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_a, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle_b, mut events_b, _tx_events_b, overlay_b) =
-            create_overlay(keypair_b, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_b, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle_c, mut events_c, _tx_events_c, overlay_c) =
-            create_overlay(keypair_c, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_c, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         // Start all nodes on different ports
         let port_a = 19901;
@@ -4410,11 +4657,11 @@ mod tests {
         let keypair_c = Keypair::generate_ed25519();
 
         let (handle_a, _events_a, _tx_events_a, overlay_a) =
-            create_overlay(keypair_a, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_a, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle_b, _events_b, mut tx_events_b, overlay_b) =
-            create_overlay(keypair_b, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_b, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle_c, _events_c, mut tx_events_c, overlay_c) =
-            create_overlay(keypair_c, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair_c, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let port_a = 20001;
         let port_b = 20002;
@@ -4487,7 +4734,7 @@ mod tests {
     async fn test_clean_shutdown() {
         let keypair = Keypair::generate_ed25519();
         let (handle, _events, _tx_events, overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         let overlay_task = tokio::spawn(async move {
             overlay.run("127.0.0.1", 20100).await;
@@ -4517,7 +4764,7 @@ mod tests {
     async fn test_dial_invalid_address() {
         let keypair = Keypair::generate_ed25519();
         let (handle, _events, _tx_events, overlay) =
-            create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         tokio::spawn(async move { overlay.run("127.0.0.1", 20200).await });
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -4544,9 +4791,9 @@ mod tests {
         let keypair2 = Keypair::generate_ed25519();
 
         let (handle1, _events1, _tx_events1, overlay1) =
-            create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
         let (handle2, mut events2, mut tx_events2, overlay2) =
-            create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+            create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
         // Use unique ports to avoid conflicts with other tests
         let listen_port = 22901;
@@ -4657,6 +4904,133 @@ mod tests {
         handle1.shutdown().await;
         handle2.shutdown().await;
     }
+
+    // ─── M1: cache short-circuit ───
+    //
+    // handle_received_compact_set must skip reconstruction when the
+    // hash is already in tx_set_cache, but should still record the
+    // announcer (it remains a viable source if the cache later evicts).
+
+    #[tokio::test]
+    async fn test_handle_received_compact_set_skips_when_cached() {
+        use crate::flood::{CachedTxSet, TxSetCache};
+
+        let keypair = Keypair::generate_ed25519();
+        let metrics = Arc::new(OverlayMetrics::new());
+        let cache = Arc::new(RwLock::new(TxSetCache::new(100)));
+
+        // Pre-populate cache with a hash that the announcement will reference.
+        let hash = [0xAA_u8; 32];
+        cache.write().await.insert(CachedTxSet {
+            hash,
+            ..Default::default()
+        });
+
+        let (_handle, mut events, _tx_events, overlay) = create_overlay(
+            keypair,
+            Arc::clone(&metrics),
+            Arc::clone(&cache),
+        )
+        .unwrap();
+
+        let state = Arc::clone(&overlay.state);
+        let fake_peer = libp2p::PeerId::random();
+        let compact = stellar_xdr::CompactTxSet {
+            tx_set_hash: stellar_xdr::Hash(hash),
+            previous_ledger_hash: stellar_xdr::Hash([0; 32]),
+            base_fee: None,
+            txs: Vec::<u8>::new().try_into().unwrap(),
+        };
+
+        handle_received_compact_set(&state, fake_peer, compact).await;
+
+        // Skip metric incremented exactly once.
+        assert_eq!(
+            metrics.compact_recon_skip_cached.load(Ordering::Relaxed),
+            1,
+            "compact_recon_skip_cached should be 1 after cached short-circuit"
+        );
+        // No reconstruction-related metrics should have moved.
+        assert_eq!(metrics.compact_recon_complete.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.compact_recon_partial.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.compact_recon_hash_mismatch.load(Ordering::Relaxed), 0);
+
+        // No TxSetReceived event should have been emitted.
+        match events.try_recv() {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            other => panic!("unexpected event after cached short-circuit: {:?}", other),
+        }
+
+        // Announcer must still have been recorded — useful for future fetches
+        // if this cache entry later evicts.
+        let mut announcers = state.compact_announcers.write().await;
+        let recorded = announcers.get(&hash).cloned().unwrap_or_default();
+        assert!(
+            recorded.contains(&fake_peer),
+            "announcer should be recorded even on cache short-circuit"
+        );
+    }
+
+    // ─── C1: PendingReconstruction shape with tried set ───
+    //
+    // Compile-time + minimal runtime check that the new fields exist and
+    // accept the expected types. Together with the disconnect handler /
+    // retry helper code paths in the rest of the file, this guards
+    // against accidental rename/removal of the tried tracking.
+
+    #[test]
+    fn test_pending_reconstruction_tracks_tried_peers() {
+        let peer_a = libp2p::PeerId::random();
+        let peer_b = libp2p::PeerId::random();
+        let mut tried = HashSet::new();
+        tried.insert(peer_a);
+        tried.insert(peer_b);
+
+        let pending = PendingReconstruction {
+            compact: stellar_xdr::CompactTxSet {
+                tx_set_hash: stellar_xdr::Hash([0; 32]),
+                previous_ledger_hash: stellar_xdr::Hash([0; 32]),
+                base_fee: None,
+                txs: Vec::<u8>::new().try_into().unwrap(),
+            },
+            matched: vec![None, Some(vec![1, 2, 3])],
+            current_peer: peer_b,
+            tried,
+            requested_at: Instant::now(),
+        };
+
+        assert_eq!(pending.tried.len(), 2);
+        assert!(pending.tried.contains(&peer_a));
+        assert!(pending.tried.contains(&peer_b));
+        assert_eq!(pending.current_peer, peer_b);
+        // matched preserves None slots — the retry helper rebuilds the
+        // missing-indices vector from these.
+        let missing: Vec<u32> = pending
+            .matched
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| if s.is_none() { Some(i as u32) } else { None })
+            .collect();
+        assert_eq!(missing, vec![0]);
+    }
+
+    // ─── M3: lock-hold metric CAS helper ───
+
+    #[test]
+    fn test_compact_recon_lock_hold_us_max_cas() {
+        let m = OverlayMetrics::new();
+        m.update_compact_recon_lock_hold_us_max(100);
+        m.update_compact_recon_lock_hold_us_max(50); // shouldn't update
+        m.update_compact_recon_lock_hold_us_max(250);
+        m.update_compact_recon_lock_hold_us_max(200); // shouldn't update
+
+        let snap = m.snapshot();
+        assert_eq!(snap.compact_recon_lock_hold_us_max, 250);
+
+        // Snapshot resets max — next snapshot should see 0 again.
+        let snap2 = m.snapshot();
+        assert_eq!(snap2.compact_recon_lock_hold_us_max, 0);
+    }
 }
 
 /// Test TX set source tracking - verify we ask the right peer
@@ -4667,9 +5041,9 @@ async fn test_txset_source_tracking() {
     let peer2_id = PeerId::from_public_key(&keypair2.public());
 
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20101;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4711,9 +5085,9 @@ async fn test_txset_fetch_flow() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20201;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4761,9 +5135,9 @@ async fn test_peer_disconnect_detection() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, _events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20301;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4799,7 +5173,7 @@ async fn test_peer_disconnect_detection() {
 async fn test_connect_unreachable_peer_timeout() {
     let keypair = Keypair::generate_ed25519();
     let (handle, _events, _tx_events, overlay) =
-        create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20401;
     tokio::spawn(async move { overlay.run("127.0.0.1", listen_port).await });
@@ -4833,9 +5207,9 @@ async fn test_large_txset_doesnt_block_scp() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20501;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4910,9 +5284,9 @@ async fn test_txset_request_and_response() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20601;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -4986,7 +5360,7 @@ async fn test_txset_request_and_response() {
 async fn test_txset_fetch_no_peers() {
     let keypair = Keypair::generate_ed25519();
     let (handle, mut events, _tx_events, overlay) =
-        create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20701;
     tokio::spawn(async move { overlay.run("127.0.0.1", listen_port).await });
@@ -5022,9 +5396,9 @@ async fn test_txset_multiple_concurrent_requests() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 20801;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -5091,9 +5465,9 @@ async fn test_scp_state_request_on_connection() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 19801;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -5156,9 +5530,9 @@ async fn test_quic_keepalive_survives_idle() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     // Use unique ports to avoid conflicts with other tests
     let listen_port = 23001;
@@ -5234,9 +5608,9 @@ async fn test_listen_on_configured_ip() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 21101;
 
@@ -5283,7 +5657,7 @@ async fn test_listen_ip_binding() {
     // On most systems, 127.0.0.1 and 127.0.0.2 are both valid loopback addresses
     let keypair = Keypair::generate_ed25519();
     let (handle, _events, _tx_events, overlay) =
-        create_overlay(keypair, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 21201;
 
@@ -5311,9 +5685,9 @@ async fn test_scp_broadcast_does_not_block_event_loop() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, _events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let port1 = 21301;
     let port2 = 21302;
@@ -5365,9 +5739,9 @@ async fn test_concurrent_scp_and_txset_writes_to_same_peer() {
     let peer2_id = PeerId::from_public_key(&keypair2.public());
 
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let listen_port = 21001;
     tokio::spawn(async move { overlay1.run("127.0.0.1", listen_port).await });
@@ -5466,9 +5840,9 @@ async fn test_pending_txset_cleanup_on_disconnect() {
     let peer1_id = PeerId::from_public_key(&keypair1.public());
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     // Start both overlays (ports must not collide with test_20_node_full_mesh 22000-22019)
     let listen_port1 = 22501;
@@ -5583,9 +5957,9 @@ async fn test_inv_getdata_tx_propagation() {
 
     // Create overlays with INV/GETDATA enabled
     let (handle1, _events1, mut tx_events1, overlay1) =
-        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, _events2, mut tx_events2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let peer1_id = PeerId::from_public_key(&keypair1.public());
 
@@ -5662,11 +6036,11 @@ async fn test_inv_getdata_three_node_relay() {
 
     // Create overlays with INV/GETDATA enabled (controlled topology)
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, _events2, mut tx_events2, overlay2) =
-        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle3, _events3, mut tx_events3, overlay3) =
-        create_overlay(keypair3, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair3, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let peer1_id = PeerId::from_public_key(&keypair1.public());
     let peer2_id = PeerId::from_public_key(&keypair2.public());
@@ -5781,11 +6155,11 @@ async fn test_scp_relay_three_nodes() {
     let keypair3 = Keypair::generate_ed25519();
 
     let (handle1, _events1, _tx_events1, overlay1) =
-        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle3, mut events3, _tx_events3, overlay3) =
-        create_overlay(keypair3, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair3, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let peer1_id = PeerId::from_public_key(&keypair1.public());
     let peer2_id = PeerId::from_public_key(&keypair2.public());
@@ -5894,9 +6268,9 @@ async fn test_scp_relay_no_echo_to_sender() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx_events1, overlay1) =
-        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, mut events2, _tx_events2, overlay2) =
-        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2.clone(), Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let peer1_id = PeerId::from_public_key(&keypair1.public());
 
@@ -5992,7 +6366,12 @@ async fn test_20_node_full_mesh() {
         let keypair = Keypair::generate_ed25519();
         let m = Arc::new(OverlayMetrics::new());
         let (handle, _events, _tx_events, overlay) =
-            create_overlay(keypair, Arc::clone(&m)).unwrap();
+            create_overlay(
+                keypair,
+                Arc::clone(&m),
+                Arc::new(RwLock::new(crate::flood::TxSetCache::new(100))),
+            )
+            .unwrap();
 
         let port = BASE_PORT + i as u16;
         tasks.push(tokio::spawn(async move {
@@ -6085,8 +6464,18 @@ async fn test_simultaneous_dial_dedup() {
 
     let m1 = Arc::new(OverlayMetrics::new());
     let m2 = Arc::new(OverlayMetrics::new());
-    let (handle1, mut events1, _tx1, overlay1) = create_overlay(keypair1, Arc::clone(&m1)).unwrap();
-    let (handle2, mut events2, _tx2, overlay2) = create_overlay(keypair2, Arc::clone(&m2)).unwrap();
+    let (handle1, mut events1, _tx1, overlay1) = create_overlay(
+        keypair1,
+        Arc::clone(&m1),
+        Arc::new(RwLock::new(crate::flood::TxSetCache::new(100))),
+    )
+    .unwrap();
+    let (handle2, mut events2, _tx2, overlay2) = create_overlay(
+        keypair2,
+        Arc::clone(&m2),
+        Arc::new(RwLock::new(crate::flood::TxSetCache::new(100))),
+    )
+    .unwrap();
 
     let port1 = 23100;
     let port2 = 23101;
@@ -6156,9 +6545,14 @@ async fn test_dial_peer_skips_when_connected() {
     let peer_id2 = keypair2.public().to_peer_id();
 
     let m1 = Arc::new(OverlayMetrics::new());
-    let (handle1, _events1, _tx1, overlay1) = create_overlay(keypair1, Arc::clone(&m1)).unwrap();
+    let (handle1, _events1, _tx1, overlay1) = create_overlay(
+        keypair1,
+        Arc::clone(&m1),
+        Arc::new(RwLock::new(crate::flood::TxSetCache::new(100))),
+    )
+    .unwrap();
     let (handle2, _events2, _tx2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let port1 = 23200;
     let port2 = 23201;
@@ -6205,9 +6599,9 @@ async fn test_peer_connected_event_emitted() {
     let keypair2 = Keypair::generate_ed25519();
 
     let (handle1, mut events1, _tx1, overlay1) =
-        create_overlay(keypair1, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair1, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
     let (handle2, _events2, _tx2, overlay2) =
-        create_overlay(keypair2, Arc::new(OverlayMetrics::new())).unwrap();
+        create_overlay(keypair2, Arc::new(OverlayMetrics::new()), Arc::new(RwLock::new(crate::flood::TxSetCache::new(100)))).unwrap();
 
     let port1 = 23300;
     let port2 = 23301;
@@ -6282,7 +6676,12 @@ async fn test_20_node_mesh_with_dedup() {
         let keypair = Keypair::generate_ed25519();
         let m = Arc::new(OverlayMetrics::new());
         let (handle, events, _tx_events, overlay) =
-            create_overlay(keypair, Arc::clone(&m)).unwrap();
+            create_overlay(
+                keypair,
+                Arc::clone(&m),
+                Arc::new(RwLock::new(crate::flood::TxSetCache::new(100))),
+            )
+            .unwrap();
 
         let port = BASE_PORT + i as u16;
         tasks.push(tokio::spawn(async move {

@@ -165,6 +165,21 @@ pub struct OverlayMetrics {
     /// `COMPACT_TX_SET_GET` requests resent to the next announcer because the
     /// first announcer timed out, disconnected, or the initial send failed.
     pub compact_get_retry: AtomicU64,
+    /// `COMPACT_TX_SET_GET_TXS` requests resent to the next announcer because
+    /// the peer we'd already asked disconnected mid-reconstruction.
+    pub compact_get_txs_retry: AtomicU64,
+    /// Reconstruction skipped because the tx set was already cached locally
+    /// (we already have the full XDR from a prior receive or local build).
+    pub compact_recon_skip_cached: AtomicU64,
+
+    // ═══ Reconstruction digest-pass cost (M3 instrumentation) ═══
+    /// Microseconds spent under the `tx_buffer` read lock running the digest
+    /// pass + slot fill in `reconstruct_full_tx_set`. Surfaced so the
+    /// lock-hold cost can be evaluated empirically before deciding whether
+    /// to optimise (snapshot, pre-computed digests, etc).
+    pub compact_recon_lock_hold_us_sum: AtomicU64,
+    pub compact_recon_lock_hold_us_count: AtomicU64,
+    pub compact_recon_lock_hold_us_max: AtomicU64,
 }
 
 impl Default for OverlayMetrics {
@@ -237,6 +252,11 @@ impl Default for OverlayMetrics {
             compact_get_timeout: AtomicU64::new(0),
             compact_reconstruction_timeout: AtomicU64::new(0),
             compact_get_retry: AtomicU64::new(0),
+            compact_get_txs_retry: AtomicU64::new(0),
+            compact_recon_skip_cached: AtomicU64::new(0),
+            compact_recon_lock_hold_us_sum: AtomicU64::new(0),
+            compact_recon_lock_hold_us_count: AtomicU64::new(0),
+            compact_recon_lock_hold_us_max: AtomicU64::new(0),
         }
     }
 }
@@ -326,6 +346,11 @@ impl OverlayMetrics {
             compact_get_timeout: self.compact_get_timeout.load(ORD),
             compact_reconstruction_timeout: self.compact_reconstruction_timeout.load(ORD),
             compact_get_retry: self.compact_get_retry.load(ORD),
+            compact_get_txs_retry: self.compact_get_txs_retry.load(ORD),
+            compact_recon_skip_cached: self.compact_recon_skip_cached.load(ORD),
+            compact_recon_lock_hold_us_sum: self.compact_recon_lock_hold_us_sum.load(ORD),
+            compact_recon_lock_hold_us_count: self.compact_recon_lock_hold_us_count.load(ORD),
+            compact_recon_lock_hold_us_max: self.compact_recon_lock_hold_us_max.swap(0, ORD),
         }
     }
 
@@ -350,6 +375,22 @@ impl OverlayMetrics {
         let mut current = self.recv_transaction_max_us.load(ORD);
         while duration_us > current {
             match self.recv_transaction_max_us.compare_exchange_weak(
+                current,
+                duration_us,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Update the compact_recon_lock_hold_us_max with compare-and-swap.
+    pub fn update_compact_recon_lock_hold_us_max(&self, duration_us: u64) {
+        let mut current = self.compact_recon_lock_hold_us_max.load(ORD);
+        while duration_us > current {
+            match self.compact_recon_lock_hold_us_max.compare_exchange_weak(
                 current,
                 duration_us,
                 Ordering::Relaxed,
@@ -445,6 +486,13 @@ pub struct MetricsSnapshot {
     pub compact_get_timeout: u64,
     pub compact_reconstruction_timeout: u64,
     pub compact_get_retry: u64,
+    pub compact_get_txs_retry: u64,
+    pub compact_recon_skip_cached: u64,
+
+    // Reconstruction digest-pass cost (M3 instrumentation)
+    pub compact_recon_lock_hold_us_sum: u64,
+    pub compact_recon_lock_hold_us_count: u64,
+    pub compact_recon_lock_hold_us_max: u64,
 }
 
 #[cfg(test)]
