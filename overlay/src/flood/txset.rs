@@ -190,7 +190,8 @@ impl CachedTxSet {
     /// `CompactTxSet` for use by the broadcast path.
     ///
     /// Panics on malformed XDR or unexpected structure (matches existing
-    /// invariants: exactly one CLASSIC component, zero SOROBAN execution stages).
+    /// invariants: zero or one CLASSIC component, zero SOROBAN execution
+    /// stages). A CLASSIC phase with zero components encodes the 0-tx case.
     pub fn from_xdr(hash: Hash256, xdr: Vec<u8>, ledger_seq: u32) -> Self {
         let txset = GeneralizedTransactionSet::from_xdr(&xdr, Limits::none())
             .expect("Failed to parse TX set XDR for caching");
@@ -204,21 +205,20 @@ impl CachedTxSet {
 
         for phase in txset.phases.iter() {
             match phase {
-                TransactionPhase::V0(components) => {
-                    if components.len() != 1 {
-                        panic!("Unexpected number of components in TX set");
+                TransactionPhase::V0(components) => match components.as_slice() {
+                    [] => {}
+                    [TxSetComponent::TxsetCompTxsMaybeDiscountedFee(txset_comp)] => {
+                        base_fee = txset_comp.base_fee;
+                        for tx in &txset_comp.txs {
+                            let tx_xdr = tx
+                                .to_xdr(Limits::none())
+                                .expect("Failed to convert TxEnvelope to XDR");
+                            tx_hashes.push(blake2b_hash(&tx_xdr));
+                            tx_envelopes_xdr.push(tx_xdr);
+                        }
                     }
-                    let TxSetComponent::TxsetCompTxsMaybeDiscountedFee(txset_comp) =
-                        components.iter().next().unwrap();
-                    base_fee = txset_comp.base_fee;
-                    for tx in &txset_comp.txs {
-                        let tx_xdr = tx
-                            .to_xdr(Limits::none())
-                            .expect("Failed to convert TxEnvelope to XDR");
-                        tx_hashes.push(blake2b_hash(&tx_xdr));
-                        tx_envelopes_xdr.push(tx_xdr);
-                    }
-                }
+                    _ => panic!("Unexpected number of components in TX set"),
+                },
                 TransactionPhase::V1(parallel) => {
                     if !parallel.execution_stages.is_empty() {
                         panic!("Unexpected execution stages in TX set");
@@ -929,6 +929,28 @@ mod tests {
             }
             other => panic!("expected Complete, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_cached_tx_set_from_xdr_empty() {
+        // Round-trip an empty (0-tx) GeneralizedTransactionSet through the
+        // cache. The CLASSIC phase has 0 components, which used to panic.
+        let prev = [0xAB; 32];
+        let xdr = build_full_tx_set_xdr(&prev, None, &[]);
+        let hash = hash_tx_set(&xdr);
+
+        let cached = CachedTxSet::from_xdr(hash, xdr, 42);
+        assert_eq!(cached.previous_ledger_hash, prev);
+        assert_eq!(cached.base_fee, None);
+        assert!(cached.tx_hashes.is_empty());
+        assert!(cached.tx_envelopes_xdr.is_empty());
+
+        let compact = CompactTxSet::from_xdr(&cached.compact_xdr, Limits::none())
+            .expect("compact_xdr should parse");
+        assert_eq!(compact.tx_set_hash.0, hash);
+        assert_eq!(compact.previous_ledger_hash.0, prev);
+        assert_eq!(compact.base_fee, None);
+        assert_eq!(compact.txs.as_slice().len(), 0);
     }
 
     /// Build a closure-style visitor over `(hash, data)` pairs for tests.
