@@ -58,6 +58,60 @@ OverlayMetrics::OverlayMetrics(Application& app)
           {"overlay", "connection", "authenticated"}))
     , mFetchTxSetTimer(
           app.getMetrics().NewTimer({"overlay", "fetch", "txset"}))
+    , mCompactAnnounceSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "announce-sent"}, "message"))
+    , mCompactAnnounceBytesSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "announce-bytes-sent"}, "byte"))
+    , mCompactAnnounceRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "announce-recv"}, "message"))
+    , mCompactAnnounceBytesRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "announce-bytes-recv"}, "byte"))
+    , mCompactGetSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-sent"}, "message"))
+    , mCompactGetBytesSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-bytes-sent"}, "byte"))
+    , mCompactGetRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-recv"}, "message"))
+    , mCompactGetBytesRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-bytes-recv"}, "byte"))
+    , mCompactGetTxsSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-txs-sent"}, "message"))
+    , mCompactGetTxsBytesSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-txs-bytes-sent"}, "byte"))
+    , mCompactGetTxsRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-txs-recv"}, "message"))
+    , mCompactGetTxsBytesRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-txs-bytes-recv"}, "byte"))
+    , mCompactTxsSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "txs-sent"}, "message"))
+    , mCompactTxsBytesSent(app.getMetrics().NewMeter(
+          {"overlay", "compact", "txs-bytes-sent"}, "byte"))
+    , mCompactTxsRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "txs-recv"}, "message"))
+    , mCompactTxsBytesRecv(app.getMetrics().NewMeter(
+          {"overlay", "compact", "txs-bytes-recv"}, "byte"))
+    , mCompactReconComplete(app.getMetrics().NewMeter(
+          {"overlay", "compact", "recon-complete"}, "set"))
+    , mCompactReconPartial(app.getMetrics().NewMeter(
+          {"overlay", "compact", "recon-partial"}, "set"))
+    , mCompactReconHashMismatch(app.getMetrics().NewMeter(
+          {"overlay", "compact", "recon-hash-mismatch"}, "set"))
+    , mCompactReconFailedFallbackLegacy(app.getMetrics().NewMeter(
+          {"overlay", "compact", "recon-failed-fallback-legacy"}, "set"))
+    , mCompactReconSkipCached(app.getMetrics().NewMeter(
+          {"overlay", "compact", "recon-skip-cached"}, "set"))
+    , mCompactGetTimeout(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-timeout"}, "timeout"))
+    , mCompactReconstructionTimeout(app.getMetrics().NewMeter(
+          {"overlay", "compact", "reconstruction-timeout"}, "timeout"))
+    , mCompactGetRetry(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-retry"}, "retry"))
+    , mCompactGetTxsRetry(app.getMetrics().NewMeter(
+          {"overlay", "compact", "get-txs-retry"}, "retry"))
+    , mReconstructedFullSizeHistogram(app.getMetrics().NewHistogram(
+          {"overlay", "compact", "reconstructed-full-size"}))
+    , mCompactReconLockHoldTimer(app.getMetrics().NewTimer(
+          {"overlay", "compact", "recon-lock-hold"}))
 {
 }
 }

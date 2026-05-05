@@ -449,6 +449,103 @@ RustOverlayManager::syncOverlayMetrics()
         // Could be added as a Counter if needed.
     }
 
+    // ── Compact tx set protocol: per-message counts and byte volume ──
+    markDelta(m.mCompactAnnounceSent, "compact_announce_sent");
+    markDelta(m.mCompactAnnounceBytesSent, "compact_announce_bytes_sent");
+    markDelta(m.mCompactAnnounceRecv, "compact_announce_recv");
+    markDelta(m.mCompactAnnounceBytesRecv, "compact_announce_bytes_recv");
+    markDelta(m.mCompactGetSent, "compact_get_sent");
+    markDelta(m.mCompactGetBytesSent, "compact_get_bytes_sent");
+    markDelta(m.mCompactGetRecv, "compact_get_recv");
+    markDelta(m.mCompactGetBytesRecv, "compact_get_bytes_recv");
+    markDelta(m.mCompactGetTxsSent, "compact_get_txs_sent");
+    markDelta(m.mCompactGetTxsBytesSent, "compact_get_txs_bytes_sent");
+    markDelta(m.mCompactGetTxsRecv, "compact_get_txs_recv");
+    markDelta(m.mCompactGetTxsBytesRecv, "compact_get_txs_bytes_recv");
+    markDelta(m.mCompactTxsSent, "compact_txs_sent");
+    markDelta(m.mCompactTxsBytesSent, "compact_txs_bytes_sent");
+    markDelta(m.mCompactTxsRecv, "compact_txs_recv");
+    markDelta(m.mCompactTxsBytesRecv, "compact_txs_bytes_recv");
+
+    // ── Compact reconstruction outcomes ──
+    markDelta(m.mCompactReconComplete, "compact_recon_complete");
+    markDelta(m.mCompactReconPartial, "compact_recon_partial");
+    markDelta(m.mCompactReconHashMismatch, "compact_recon_hash_mismatch");
+    markDelta(m.mCompactReconFailedFallbackLegacy,
+              "compact_recon_failed_fallback_legacy");
+    markDelta(m.mCompactReconSkipCached, "compact_recon_skip_cached");
+
+    // ── Pending-state housekeeping (timeouts and retries) ──
+    markDelta(m.mCompactGetTimeout, "compact_get_timeout");
+    markDelta(m.mCompactReconstructionTimeout, "compact_reconstruction_timeout");
+    markDelta(m.mCompactGetRetry, "compact_get_retry");
+    markDelta(m.mCompactGetTxsRetry, "compact_get_txs_retry");
+
+    // ── Reconstructed full tx-set size histogram ──
+    // The Rust side reports sum/count and a max-since-last-call. We feed the
+    // average reconstructed size into the medida Histogram once per
+    // reconstruction event observed in the delta, mirroring the
+    // `flood_tx_batch_size` pattern. The `_max` field is consumed (and reset
+    // on the Rust side) but isn't surfaced separately on the C++ side; medida
+    // tracks its own max from each Update call.
+    if (root.isMember("reconstructed_full_size_sum") &&
+        root.isMember("reconstructed_full_size_count"))
+    {
+        auto sum = static_cast<int64_t>(
+            root["reconstructed_full_size_sum"].asUInt64());
+        auto count = static_cast<int64_t>(
+            root["reconstructed_full_size_count"].asUInt64());
+        auto lastSum = mLastSyncedValues["reconstructed_full_size_sum"];
+        auto lastCount = mLastSyncedValues["reconstructed_full_size_count"];
+        auto deltaSum = sum - lastSum;
+        auto deltaCount = count - lastCount;
+        if (deltaCount > 0 && deltaSum > 0)
+        {
+            auto avg = deltaSum / deltaCount;
+            for (int64_t i = 0; i < deltaCount; ++i)
+            {
+                m.mReconstructedFullSizeHistogram.Update(avg);
+            }
+        }
+        mLastSyncedValues["reconstructed_full_size_sum"] = sum;
+        mLastSyncedValues["reconstructed_full_size_count"] = count;
+    }
+    // Drain `_max` so the Rust-side swap-to-zero stays consistent across
+    // sync calls even though we don't expose it separately in medida.
+    if (root.isMember("reconstructed_full_size_max"))
+    {
+        (void)root["reconstructed_full_size_max"].asUInt64();
+    }
+
+    // ── Reconstruction lock-hold timer ──
+    if (root.isMember("compact_recon_lock_hold_us_sum") &&
+        root.isMember("compact_recon_lock_hold_us_count"))
+    {
+        auto sum = static_cast<int64_t>(
+            root["compact_recon_lock_hold_us_sum"].asUInt64());
+        auto count = static_cast<int64_t>(
+            root["compact_recon_lock_hold_us_count"].asUInt64());
+        auto lastSum = mLastSyncedValues["compact_recon_lock_hold_us_sum"];
+        auto lastCount = mLastSyncedValues["compact_recon_lock_hold_us_count"];
+        auto deltaSum = sum - lastSum;
+        auto deltaCount = count - lastCount;
+        if (deltaCount > 0 && deltaSum > 0)
+        {
+            auto avgUs = deltaSum / deltaCount;
+            for (int64_t i = 0; i < deltaCount; ++i)
+            {
+                m.mCompactReconLockHoldTimer.Update(
+                    std::chrono::microseconds{avgUs});
+            }
+        }
+        mLastSyncedValues["compact_recon_lock_hold_us_sum"] = sum;
+        mLastSyncedValues["compact_recon_lock_hold_us_count"] = count;
+    }
+    if (root.isMember("compact_recon_lock_hold_us_max"))
+    {
+        (void)root["compact_recon_lock_hold_us_max"].asUInt64();
+    }
+
     CLOG_TRACE(Overlay, "Synced overlay metrics from Rust overlay");
 }
 

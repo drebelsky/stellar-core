@@ -68,5 +68,44 @@ struct OverlayMetrics
 
     // ── TxSet fetch latency ──
     medida::Timer& mFetchTxSetTimer;
+
+    // ── Compact tx set protocol: per-message-type counts and byte volume ──
+    // Counts (one Mark per message); byte volume is tracked separately so the
+    // average size of each message type can be computed.
+    medida::Meter& mCompactAnnounceSent;
+    medida::Meter& mCompactAnnounceBytesSent;
+    medida::Meter& mCompactAnnounceRecv;
+    medida::Meter& mCompactAnnounceBytesRecv;
+    medida::Meter& mCompactGetSent;
+    medida::Meter& mCompactGetBytesSent;
+    medida::Meter& mCompactGetRecv;
+    medida::Meter& mCompactGetBytesRecv;
+    medida::Meter& mCompactGetTxsSent;
+    medida::Meter& mCompactGetTxsBytesSent;
+    medida::Meter& mCompactGetTxsRecv;
+    medida::Meter& mCompactGetTxsBytesRecv;
+    medida::Meter& mCompactTxsSent;
+    medida::Meter& mCompactTxsBytesSent;
+    medida::Meter& mCompactTxsRecv;
+    medida::Meter& mCompactTxsBytesRecv;
+
+    // ── Reconstruction outcomes ──
+    medida::Meter& mCompactReconComplete;
+    medida::Meter& mCompactReconPartial;
+    medida::Meter& mCompactReconHashMismatch;
+    medida::Meter& mCompactReconFailedFallbackLegacy;
+    medida::Meter& mCompactReconSkipCached;
+
+    // ── Pending-state housekeeping (timeouts and retries) ──
+    medida::Meter& mCompactGetTimeout;
+    medida::Meter& mCompactReconstructionTimeout;
+    medida::Meter& mCompactGetRetry;
+    medida::Meter& mCompactGetTxsRetry;
+
+    // ── Reconstructed full tx-set size (bytes) ──
+    medida::Histogram& mReconstructedFullSizeHistogram;
+
+    // ── Lock-hold cost during digest pass in reconstruct_full_tx_set ──
+    medida::Timer& mCompactReconLockHoldTimer;
 };
 }
