@@ -785,8 +785,9 @@ impl App {
                 // and Core subsequently broadcasts the SCP to other peers
                 {
                     let current_seq = *self.current_ledger_seq.read().await;
+                    let cached = CachedTxSet::from_xdr(hash, data.clone(), current_seq);
                     let mut cache = self.tx_set_cache.write().await;
-                    cache.insert(CachedTxSet::from_xdr(hash, data.clone(), current_seq));
+                    cache.insert(cached);
                 }
 
                 // Always push TX set to Core (Core handles dedup)
@@ -1239,8 +1240,9 @@ impl App {
                 );
 
                 let current_seq = *self.current_ledger_seq.read().await;
+                let cached = CachedTxSet::from_xdr(hash, xdr, current_seq);
                 let mut cache = self.tx_set_cache.write().await;
-                cache.insert(CachedTxSet::from_xdr(hash, xdr, current_seq));
+                cache.insert(cached);
             }
 
             MessageType::SubmitTx => {
