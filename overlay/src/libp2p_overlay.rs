@@ -3006,6 +3006,15 @@ async fn handle_received_compact_txs(
 }
 
 /// Mark `hash` as compact-failed and trigger a legacy TXSET fetch.
+///
+/// Promotes a connected announcer (if any) into `txset_sources` before
+/// falling back. Compact announcements arrive on the SCP stream ahead of
+/// the SCP envelope they accompany, so when reconstruction fails the
+/// envelope's `record_txset_source` typically hasn't run yet — without this
+/// promotion, `fetch_txset_legacy` would pick a random connected peer that
+/// likely doesn't have the set, and Herder would stall (`requestTxSet` is
+/// "Only once!"). Prefer a still-connected announcer; fall through silently
+/// if none are connected (legacy will pick something else).
 async fn mark_compact_failed_and_fallback(state: &Arc<SharedState>, hash: [u8; 32]) {
     state
         .metrics
@@ -3014,6 +3023,16 @@ async fn mark_compact_failed_and_fallback(state: &Arc<SharedState>, hash: [u8; 3
     {
         let mut failed = state.compact_failed.write().await;
         failed.put(hash, ());
+    }
+    let announcer = {
+        let announcers = state.compact_announcers.read().await;
+        let streams = state.peer_streams.read().await;
+        announcers
+            .peek(&hash)
+            .and_then(|peers| peers.iter().find(|p| streams.contains_key(p)).cloned())
+    };
+    if let Some(peer) = announcer {
+        state.txset_sources.write().await.put(hash, peer);
     }
     fetch_txset_legacy(state, hash).await;
 }
