@@ -786,7 +786,7 @@ impl App {
                 {
                     let current_seq = *self.current_ledger_seq.read().await;
                     let mut cache = self.tx_set_cache.write().await;
-                    cache.insert(CachedTxSet::from_xdr(hash, data.clone(), current_seq));
+                    cache.insert(CachedTxSet::new(hash, data.clone(), current_seq));
                 }
 
                 // Always push TX set to Core (Core handles dedup)
@@ -837,7 +837,7 @@ impl App {
                 let cache = self.tx_set_cache.read().await;
                 if let Some(cached) = cache.get(&hash) {
                     let handle = self.libp2p_handle.clone();
-                    let compact_xdr = cached.compact_xdr.clone();
+                    let compact_xdr = cached.compact_xdr().to_vec();
                     tokio::spawn(async move {
                         handle
                             .send_compact_txset_response(hash, compact_xdr, from)
@@ -875,21 +875,18 @@ impl App {
                         return;
                     }
                 };
-                let mut requested: Vec<Vec<u8>> = Vec::with_capacity(indices.len());
-                for &i in &indices {
-                    match cached.tx_envelopes_xdr.get(i as usize) {
-                        Some(b) => requested.push(b.clone()),
-                        None => {
-                            warn!(
-                                "Index {} out of range ({} txs) for TxSet {:02x?}...",
-                                i,
-                                cached.tx_envelopes_xdr.len(),
-                                &hash[..4]
-                            );
-                            return;
-                        }
+                let requested = match cached.tx_envelopes_at(&indices) {
+                    Some(r) => r,
+                    None => {
+                        warn!(
+                            "Failed to extract {} requested txs for TxSet {:02x?}... \
+                             (out-of-range index or malformed XDR)",
+                            indices.len(),
+                            &hash[..4]
+                        );
+                        return;
                     }
-                }
+                };
                 drop(cache);
                 let handle = self.libp2p_handle.clone();
                 tokio::spawn(async move {
@@ -1102,7 +1099,7 @@ impl App {
                     for hash in &hashes {
                         match cache.get(hash) {
                             Some(cached) => {
-                                compact_sets.push((*hash, cached.compact_xdr.clone()));
+                                compact_sets.push((*hash, cached.compact_xdr().to_vec()));
                             }
                             None => {
                                 warn!(
@@ -1240,7 +1237,7 @@ impl App {
 
                 let current_seq = *self.current_ledger_seq.read().await;
                 let mut cache = self.tx_set_cache.write().await;
-                cache.insert(CachedTxSet::from_xdr(hash, xdr, current_seq));
+                cache.insert(CachedTxSet::new(hash, xdr, current_seq));
             }
 
             MessageType::SubmitTx => {

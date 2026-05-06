@@ -4940,10 +4940,7 @@ mod tests {
 
         // Pre-populate cache with a hash that the announcement will reference.
         let hash = [0xAA_u8; 32];
-        cache.write().await.insert(CachedTxSet {
-            hash,
-            ..Default::default()
-        });
+        cache.write().await.insert(CachedTxSet::new(hash, Vec::new(), 0));
 
         let (_handle, mut events, _tx_events, overlay) = create_overlay(
             keypair,

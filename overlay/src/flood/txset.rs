@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use siphasher::sip::SipHasher24;
 use std::collections::HashMap;
 use std::hash::Hasher;
+use std::sync::OnceLock;
 use stellar_xdr::{
     CompactTxSet, GeneralizedTransactionSet, Hash, Limits, ReadXdr, TransactionPhase,
     TxSetComponent, WriteXdr,
@@ -20,7 +21,7 @@ pub type Hash256 = [u8; 32];
 pub type TxHash = [u8; 32];
 
 /// A cached TX set with its XDR and hash.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct CachedTxSet {
     /// The TX set hash (SHA256 of XDR)
     pub hash: Hash256,
@@ -28,19 +29,11 @@ pub struct CachedTxSet {
     pub xdr: Vec<u8>,
     /// Ledger sequence this was built for
     pub ledger_seq: u32,
-    /// Hashes of TXs included in this set (for mempool cleanup)
-    pub tx_hashes: Vec<TxHash>,
-    /// Previous ledger hash, extracted from the GeneralizedTransactionSet XDR
-    pub previous_ledger_hash: Hash256,
-    /// Base fee for the CLASSIC component (None when no discounted fee was set)
-    pub base_fee: Option<i64>,
-    /// Eagerly built serialized stellar_xdr::CompactTxSet for this set
-    pub compact_xdr: Vec<u8>,
-    /// Per-tx already-serialized TransactionEnvelope XDR, in flat CLASSIC
-    /// order (matches the indices used in CompactTxSet.txs). Populated at
-    /// insert time so peer GET_TXS responses don't need to re-parse the
-    /// cached GeneralizedTransactionSet on every request.
-    pub tx_envelopes_xdr: Vec<Vec<u8>>,
+    /// Lazily built serialized `stellar_xdr::CompactTxSet` for this set.
+    /// Filled on first call to [`Self::compact_xdr`] and reused afterwards
+    /// so peer `COMPACT_TX_SET_GET` / `BroadcastScpCompact` requests can be
+    /// served without re-parsing `xdr` every time.
+    compact_xdr: OnceLock<Vec<u8>>,
 }
 
 /// TX set cache - stores built TX sets by hash for retrieval.
@@ -75,9 +68,9 @@ impl TxSetCache {
         self.by_hash.get(hash)
     }
 
-    /// Remove a TX set by hash and return the TX hashes it contained.
-    pub fn remove(&mut self, hash: &Hash256) -> Option<Vec<TxHash>> {
-        self.by_hash.remove(hash).map(|ts| ts.tx_hashes)
+    /// Remove a TX set by hash. Returns `true` if an entry was present.
+    pub fn remove(&mut self, hash: &Hash256) -> bool {
+        self.by_hash.remove(hash).is_some()
     }
 
     /// Remove TX sets for ledgers before the given sequence.
@@ -183,24 +176,36 @@ pub fn build_tx_set_xdr(prev_ledger_hash: &Hash256, tx_envelopes: &[Vec<u8>]) ->
 }
 
 impl CachedTxSet {
-    /// Build a `CachedTxSet` from a serialized GeneralizedTransactionSet.
-    ///
-    /// Parses the XDR once to extract `tx_hashes`, `previous_ledger_hash`, and
-    /// the CLASSIC component's `base_fee`, then eagerly builds the serialized
-    /// `CompactTxSet` for use by the broadcast path.
+    /// Cheap constructor: stores `xdr` verbatim without parsing. The
+    /// compact form is built lazily by [`Self::compact_xdr`] on the first
+    /// peer request that needs it.
+    pub fn new(hash: Hash256, xdr: Vec<u8>, ledger_seq: u32) -> Self {
+        Self {
+            hash,
+            xdr,
+            ledger_seq,
+            compact_xdr: OnceLock::new(),
+        }
+    }
+
+    /// Return the serialized `stellar_xdr::CompactTxSet` for this set,
+    /// building (and caching) it on first call.
     ///
     /// Panics on malformed XDR or unexpected structure (matches existing
     /// invariants: zero or one CLASSIC component, zero SOROBAN execution
     /// stages). A CLASSIC phase with zero components encodes the 0-tx case.
-    pub fn from_xdr(hash: Hash256, xdr: Vec<u8>, ledger_seq: u32) -> Self {
-        let txset = GeneralizedTransactionSet::from_xdr(&xdr, Limits::none())
+    pub fn compact_xdr(&self) -> &[u8] {
+        self.compact_xdr
+            .get_or_init(|| Self::build_compact_xdr(&self.hash, &self.xdr))
+    }
+
+    fn build_compact_xdr(hash: &Hash256, xdr: &[u8]) -> Vec<u8> {
+        let txset = GeneralizedTransactionSet::from_xdr(xdr, Limits::none())
             .expect("Failed to parse TX set XDR for caching");
         let GeneralizedTransactionSet::V1(txset) = txset;
 
         let previous_ledger_hash: Hash256 = txset.previous_ledger_hash.0;
-
-        let mut tx_hashes = Vec::new();
-        let mut tx_envelopes_xdr: Vec<Vec<u8>> = Vec::new();
+        let mut tx_hashes: Vec<TxHash> = Vec::new();
         let mut base_fee: Option<i64> = None;
 
         for phase in txset.phases.iter() {
@@ -214,7 +219,6 @@ impl CachedTxSet {
                                 .to_xdr(Limits::none())
                                 .expect("Failed to convert TxEnvelope to XDR");
                             tx_hashes.push(blake2b_hash(&tx_xdr));
-                            tx_envelopes_xdr.push(tx_xdr);
                         }
                     }
                     _ => panic!("Unexpected number of components in TX set"),
@@ -227,19 +231,39 @@ impl CachedTxSet {
             }
         }
 
-        let compact_xdr =
-            build_compact_tx_set_xdr(&hash, &previous_ledger_hash, base_fee, &tx_hashes);
+        build_compact_tx_set_xdr(hash, &previous_ledger_hash, base_fee, &tx_hashes)
+    }
 
-        Self {
-            hash,
-            xdr,
-            ledger_seq,
-            tx_hashes,
-            previous_ledger_hash,
-            base_fee,
-            compact_xdr,
-            tx_envelopes_xdr,
+    /// Return the serialized `TransactionEnvelope` XDR for each requested
+    /// CLASSIC tx index. Returns `None` if the cached XDR fails to parse,
+    /// has unexpected structure, or any index is out of range. Re-parses
+    /// `xdr` each call — `tx_envelopes_xdr` is no longer cached, so this
+    /// is the slow path used only when peers request `COMPACT_TX_SET_GET_TXS`.
+    pub fn tx_envelopes_at(&self, indices: &[u32]) -> Option<Vec<Vec<u8>>> {
+        let txset = GeneralizedTransactionSet::from_xdr(&self.xdr, Limits::none()).ok()?;
+        let GeneralizedTransactionSet::V1(txset) = txset;
+
+        let mut classic_txs: Option<&[stellar_xdr::TransactionEnvelope]> = None;
+        for phase in txset.phases.iter() {
+            if let TransactionPhase::V0(components) = phase {
+                match components.as_slice() {
+                    [] => classic_txs = Some(&[]),
+                    [TxSetComponent::TxsetCompTxsMaybeDiscountedFee(c)] => {
+                        classic_txs = Some(c.txs.as_slice());
+                    }
+                    _ => return None,
+                }
+                break;
+            }
         }
+        let txs = classic_txs?;
+
+        let mut out = Vec::with_capacity(indices.len());
+        for &i in indices {
+            let tx = txs.get(i as usize)?;
+            out.push(tx.to_xdr(Limits::none()).ok()?);
+        }
+        Some(out)
     }
 }
 
@@ -638,15 +662,7 @@ mod tests {
     fn test_cache_insert_and_get() {
         let mut cache = TxSetCache::new(10);
 
-        let tx_set = CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![1, 2, 3],
-            ledger_seq: 100,
-            tx_hashes: vec![],
-            ..Default::default()
-        };
-
-        cache.insert(tx_set.clone());
+        cache.insert(CachedTxSet::new([1u8; 32], vec![1, 2, 3], 100));
 
         let retrieved = cache.get(&[1u8; 32]);
         assert!(retrieved.is_some());
@@ -657,20 +673,8 @@ mod tests {
     fn test_cache_evict_before() {
         let mut cache = TxSetCache::new(10);
 
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![],
-            ledger_seq: 100,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
-        cache.insert(CachedTxSet {
-            hash: [2u8; 32],
-            xdr: vec![],
-            ledger_seq: 200,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![], 100));
+        cache.insert(CachedTxSet::new([2u8; 32], vec![], 200));
 
         cache.evict_before(150);
 
@@ -682,31 +686,13 @@ mod tests {
     fn test_cache_capacity_eviction() {
         let mut cache = TxSetCache::new(2); // Small cache
 
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![],
-            ledger_seq: 100,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
-        cache.insert(CachedTxSet {
-            hash: [2u8; 32],
-            xdr: vec![],
-            ledger_seq: 101,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![], 100));
+        cache.insert(CachedTxSet::new([2u8; 32], vec![], 101));
 
         assert_eq!(cache.len(), 2);
 
         // Insert 3rd - should evict one
-        cache.insert(CachedTxSet {
-            hash: [3u8; 32],
-            xdr: vec![],
-            ledger_seq: 102,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([3u8; 32], vec![], 102));
 
         assert_eq!(cache.len(), 2, "Cache should stay at capacity");
         assert!(
@@ -716,22 +702,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_remove_returns_tx_hashes() {
+    fn test_cache_remove_returns_true_when_present() {
         let mut cache = TxSetCache::new(10);
 
-        let tx_hashes = vec![[0xAA; 32], [0xBB; 32]];
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![],
-            ledger_seq: 100,
-            tx_hashes: tx_hashes.clone(),
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![], 100));
 
-        let removed = cache.remove(&[1u8; 32]);
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap(), tx_hashes);
-
+        assert!(cache.remove(&[1u8; 32]));
         // Should be gone now
         assert!(cache.get(&[1u8; 32]).is_none());
     }
@@ -740,28 +716,15 @@ mod tests {
     fn test_cache_remove_nonexistent() {
         let mut cache = TxSetCache::new(10);
 
-        let removed = cache.remove(&[99u8; 32]);
-        assert!(removed.is_none());
+        assert!(!cache.remove(&[99u8; 32]));
     }
 
     #[test]
     fn test_cache_clear() {
         let mut cache = TxSetCache::new(10);
 
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![],
-            ledger_seq: 100,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
-        cache.insert(CachedTxSet {
-            hash: [2u8; 32],
-            xdr: vec![],
-            ledger_seq: 101,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![], 100));
+        cache.insert(CachedTxSet::new([2u8; 32], vec![], 101));
 
         assert_eq!(cache.len(), 2);
 
@@ -776,22 +739,10 @@ mod tests {
     fn test_cache_overwrite_same_hash() {
         let mut cache = TxSetCache::new(10);
 
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![1, 2, 3],
-            ledger_seq: 100,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![1, 2, 3], 100));
 
         // Insert with same hash but different data
-        cache.insert(CachedTxSet {
-            hash: [1u8; 32],
-            xdr: vec![4, 5, 6],
-            ledger_seq: 200,
-            tx_hashes: vec![],
-            ..Default::default()
-        });
+        cache.insert(CachedTxSet::new([1u8; 32], vec![4, 5, 6], 200));
 
         assert_eq!(cache.len(), 1, "Should not create duplicate");
         let retrieved = cache.get(&[1u8; 32]).unwrap();
@@ -932,25 +883,53 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_tx_set_from_xdr_empty() {
+    fn test_cached_tx_set_lazy_compact_xdr_empty() {
         // Round-trip an empty (0-tx) GeneralizedTransactionSet through the
         // cache. The CLASSIC phase has 0 components, which used to panic.
         let prev = [0xAB; 32];
         let xdr = build_full_tx_set_xdr(&prev, None, &[]);
         let hash = hash_tx_set(&xdr);
 
-        let cached = CachedTxSet::from_xdr(hash, xdr, 42);
-        assert_eq!(cached.previous_ledger_hash, prev);
-        assert_eq!(cached.base_fee, None);
-        assert!(cached.tx_hashes.is_empty());
-        assert!(cached.tx_envelopes_xdr.is_empty());
+        let cached = CachedTxSet::new(hash, xdr, 42);
 
-        let compact = CompactTxSet::from_xdr(&cached.compact_xdr, Limits::none())
+        let compact = CompactTxSet::from_xdr(cached.compact_xdr(), Limits::none())
             .expect("compact_xdr should parse");
         assert_eq!(compact.tx_set_hash.0, hash);
         assert_eq!(compact.previous_ledger_hash.0, prev);
         assert_eq!(compact.base_fee, None);
         assert_eq!(compact.txs.as_slice().len(), 0);
+
+        // Second call returns cached bytes (same pointer).
+        let first_ptr = cached.compact_xdr().as_ptr();
+        let second_ptr = cached.compact_xdr().as_ptr();
+        assert_eq!(first_ptr, second_ptr, "compact_xdr should be cached");
+    }
+
+    #[test]
+    fn test_cached_tx_set_lazy_tx_envelopes_at() {
+        // Build a 3-tx CLASSIC tx set and ensure tx_envelopes_at returns
+        // the requested envelopes (and rejects out-of-range indices).
+        use stellar_xdr::{TransactionEnvelope, WriteXdr};
+        let prev = [0xCD; 32];
+        let envs: Vec<Vec<u8>> = (0..3u8)
+            .map(|_| {
+                TransactionEnvelope::default()
+                    .to_xdr(Limits::none())
+                    .unwrap()
+            })
+            .collect();
+        let xdr = build_full_tx_set_xdr(&prev, None, &envs);
+        let hash = hash_tx_set(&xdr);
+
+        let cached = CachedTxSet::new(hash, xdr, 7);
+
+        let got = cached.tx_envelopes_at(&[2, 0]).expect("indices in range");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], envs[2]);
+        assert_eq!(got[1], envs[0]);
+
+        // Out-of-range index → None.
+        assert!(cached.tx_envelopes_at(&[5]).is_none());
     }
 
     /// Build a closure-style visitor over `(hash, data)` pairs for tests.
