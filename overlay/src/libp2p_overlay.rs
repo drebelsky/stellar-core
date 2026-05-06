@@ -81,10 +81,6 @@ const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 /// TXs that can't be queued are dropped - they'll be re-requested if needed.
 const TX_EVENT_CHANNEL_CAPACITY: usize = 10_000;
 
-/// Time after which an outstanding `COMPACT_TX_SET_GET` to a peer is
-/// abandoned and the request falls back to legacy fetch.
-const COMPACT_GET_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Time after which a `PendingReconstruction` waiting on a `GET_TXS`
 /// response is abandoned and the request falls back to legacy fetch.
 const COMPACT_RECONSTRUCTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -426,20 +422,6 @@ impl OverlayHandle {
     }
 }
 
-/// State for an outstanding `COMPACT_TX_SET_GET` request.
-///
-/// `tried` accumulates peers we've already asked (current `peer` plus any
-/// previous attempts) so that timeout-driven retries can pick the next
-/// connected announcer that hasn't been tried yet.
-struct PendingCompactGet {
-    /// Peer the current attempt was sent to.
-    peer: PeerId,
-    /// When the current attempt was sent (timeout reference).
-    started_at: Instant,
-    /// All peers we've sent a SetGet to for this hash, including the current one.
-    tried: HashSet<PeerId>,
-}
-
 /// State for an in-progress compact tx set reconstruction.
 ///
 /// Created when a `CompactTxSet` is received but the local mempool doesn't
@@ -449,8 +431,7 @@ struct PendingCompactGet {
 ///
 /// `tried` accumulates every peer we've sent a GET_TXS to for this hash, so
 /// `retry_compact_get_txs_or_fallback` can advance through announcers if
-/// the current peer disconnects mid-reconstruction (mirrors
-/// `PendingCompactGet`).
+/// the current peer disconnects mid-reconstruction.
 struct PendingReconstruction {
     /// The CompactTxSet announcement we're trying to reconstruct from.
     compact: stellar_xdr::CompactTxSet,
@@ -489,16 +470,13 @@ struct SharedState {
     /// Pending TX set requests: hash -> (peer, request_time) to avoid duplicate fetches and track latency
     pending_txset_requests: RwLock<HashMap<[u8; 32], (PeerId, Instant)>>,
     /// Multi-peer announcer cache populated when we receive `COMPACT_TX_SET`
-    /// on the SCP stream. Drives peer selection for both `COMPACT_TX_SET_GET`
-    /// (compact-first fetch path) and `COMPACT_TX_SET_GET_TXS` (missing-txs fill).
+    /// on the SCP stream. Drives peer selection for `COMPACT_TX_SET_GET_TXS`
+    /// (missing-txs fill on a partial reconstruction) and is also promoted
+    /// into `txset_sources` by `mark_compact_failed_and_fallback` so the
+    /// legacy fetch prefers the announcer.
     compact_announcers: RwLock<lru::LruCache<[u8; 32], Vec<PeerId>>>,
-    /// Dedup and retry-tracking for outbound `COMPACT_TX_SET_GET` requests.
-    pending_compact_get: RwLock<HashMap<[u8; 32], PendingCompactGet>>,
     /// In-flight reconstructions waiting on `COMPACT_TX_SET_TXS` responses.
     pending_compact_reconstructions: RwLock<HashMap<[u8; 32], PendingReconstruction>>,
-    /// Hashes for which the compact path has terminally failed (Missing-after-GET_TXS
-    /// or HashMismatch). `fetch_txset` short-circuits to legacy on hit.
-    compact_failed: RwLock<lru::LruCache<[u8; 32], ()>>,
     /// Event sender for non-TX events (SCP, TxSet - critical path, unbounded)
     event_tx: mpsc::UnboundedSender<OverlayEvent>,
     /// Bounded TX event sender (backpressure - drops allowed)
@@ -557,11 +535,7 @@ impl SharedState {
             compact_announcers: RwLock::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(1000).unwrap(),
             )),
-            pending_compact_get: RwLock::new(HashMap::new()),
             pending_compact_reconstructions: RwLock::new(HashMap::new()),
-            compact_failed: RwLock::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(1000).unwrap(),
-            )),
             event_tx,
             tx_event_tx,
             tx_dropped_count: AtomicU64::new(0),
@@ -935,42 +909,6 @@ impl StellarOverlay {
                                 removed, peer_id
                             );
                         }
-                    }
-                    // Clean up pending compact-get requests sent to this peer
-                    // and schedule a retry to the next announcer (Herder won't
-                    // retry on its own — `requestTxSet` is "Only once!").
-                    let to_retry: Vec<([u8; 32], HashSet<PeerId>)> = {
-                        let mut pending = self.state.pending_compact_get.write().await;
-                        let mut taken = Vec::new();
-                        let hashes_for_peer: Vec<[u8; 32]> = pending
-                            .iter()
-                            .filter_map(|(h, pcg)| {
-                                if pcg.peer == peer_id {
-                                    Some(*h)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        for h in hashes_for_peer {
-                            if let Some(pcg) = pending.remove(&h) {
-                                taken.push((h, pcg.tried));
-                            }
-                        }
-                        taken
-                    };
-                    if !to_retry.is_empty() {
-                        info!(
-                            "Removed {} pending compact-get requests for disconnected peer {} (will retry)",
-                            to_retry.len(),
-                            peer_id
-                        );
-                    }
-                    for (hash, tried) in to_retry {
-                        let state = Arc::clone(&self.state);
-                        tokio::spawn(async move {
-                            retry_compact_get_or_fallback(&state, hash, tried).await;
-                        });
                     }
                     // Take pending compact reconstructions waiting on this peer
                     // and schedule a retry to the next un-tried announcer for
@@ -1348,9 +1286,12 @@ impl StellarOverlay {
         }
     }
 
-    /// Fetch TX set: try compact path first, fall back to legacy on failure.
+    /// Fetch TX set via the legacy full-XDR path. Compact tx sets are only
+    /// obtained as passive recipients of an optimistic SCP-channel push
+    /// (`broadcast_scp` on the proposer side, `handle_received_compact_announcement`
+    /// on the receiver side); we never actively request a compact tx set.
     async fn fetch_txset(&mut self, hash: [u8; 32]) {
-        fetch_txset_compact_first(&self.state, hash).await;
+        fetch_txset_legacy(&self.state, hash).await;
     }
 
     /// Send TX set response to a specific peer
@@ -1780,6 +1721,7 @@ async fn read_framed(stream: &mut Stream) -> io::Result<Vec<u8>> {
 // ─────────────────────────────────────────────────────────────────────────
 
 const COMPACT_MSG_TYPE_SET: u32 = 0;
+#[cfg(test)]
 const COMPACT_MSG_TYPE_SET_GET: u32 = 1;
 const COMPACT_MSG_TYPE_SET_GET_TXS: u32 = 2;
 const COMPACT_MSG_TYPE_SET_TXS: u32 = 3;
@@ -1803,7 +1745,10 @@ fn build_compact_msg_set(compact_xdr: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Build a `CompactTxSetMessage::SetGet { tx_set_hash }` frame.
+/// Build a `CompactTxSetMessage::SetGet { tx_set_hash }` frame. Test-only:
+/// production code never sends a SetGet — compact tx sets only arrive via
+/// the optimistic SCP-channel push.
+#[cfg(test)]
 fn build_compact_msg_set_get(tx_set_hash: &[u8; 32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 32);
     out.extend_from_slice(&COMPACT_MSG_TYPE_SET_GET.to_be_bytes());
@@ -2495,11 +2440,6 @@ async fn handle_inbound_txset_streams(mut incoming: IncomingStreams, state: Arc<
                                 }
                             };
 
-                            // The legacy fetch succeeded — un-stick this hash
-                            // from compact_failed so a future appearance can
-                            // try the compact path again.
-                            state.compact_failed.write().await.pop(&hash);
-
                             info!(
                                 "TXSET_RECV: Received TxSet {:02x?}... ({} bytes) from {} (was_pending={})",
                                 &hash[..4],
@@ -2599,12 +2539,11 @@ async fn handle_compact_message(
                 .compact_announce_bytes_recv
                 .fetch_add(frame_len as u64, Ordering::Relaxed);
 
-            let hash: [u8; 32] = compact.tx_set_hash.0;
-            // This is a direct response to a GET we issued — clear pending.
-            {
-                let mut pending = state.pending_compact_get.write().await;
-                pending.remove(&hash);
-            }
+            // We no longer actively send `COMPACT_TX_SET_GET`, so a `Set`
+            // arriving on this dedicated stream is unsolicited. Treat it
+            // the same as an SCP-stream announcement: record the announcer
+            // and try reconstruction. Defensive — a peer running older
+            // code, or a duplicate announcement, both wind up here.
             handle_received_compact_set(state, peer_id, compact).await;
         }
         CompactTxSetMessage::SetGet(get) => {
@@ -3005,7 +2944,8 @@ async fn handle_received_compact_txs(
     }
 }
 
-/// Mark `hash` as compact-failed and trigger a legacy TXSET fetch.
+/// Compact reconstruction failed (HashMismatch, GET_TXS exhausted, etc.) —
+/// trigger a legacy TXSET fetch.
 ///
 /// Promotes a connected announcer (if any) into `txset_sources` before
 /// falling back. Compact announcements arrive on the SCP stream ahead of
@@ -3020,10 +2960,6 @@ async fn mark_compact_failed_and_fallback(state: &Arc<SharedState>, hash: [u8; 3
         .metrics
         .compact_recon_failed_fallback_legacy
         .fetch_add(1, Ordering::Relaxed);
-    {
-        let mut failed = state.compact_failed.write().await;
-        failed.put(hash, ());
-    }
     let announcer = {
         let announcers = state.compact_announcers.read().await;
         let streams = state.peer_streams.read().await;
@@ -3035,98 +2971,6 @@ async fn mark_compact_failed_and_fallback(state: &Arc<SharedState>, hash: [u8; 3
         state.txset_sources.write().await.put(hash, peer);
     }
     fetch_txset_legacy(state, hash).await;
-}
-
-/// Retry a `COMPACT_TX_SET_GET` for `hash` against the next un-tried connected
-/// announcer in `compact_announcers`. Updates `pending_compact_get[hash]` to
-/// reflect the new attempt. If no fresh announcer is available (or the send
-/// fails for the new peer too), removes the pending entry and falls back to
-/// `mark_compact_failed_and_fallback` (legacy fetch).
-///
-/// `prior_tried` is the set of peers we've already asked for `hash` (the
-/// caller has typically just removed the pending entry to take ownership of
-/// its `tried` set).
-async fn retry_compact_get_or_fallback(
-    state: &Arc<SharedState>,
-    hash: [u8; 32],
-    prior_tried: HashSet<PeerId>,
-) {
-    // Find the next connected announcer not in prior_tried.
-    let next_peer: Option<PeerId> = {
-        let announcers = state.compact_announcers.read().await;
-        let streams = state.peer_streams.read().await;
-        announcers.peek(&hash).and_then(|peers| {
-            peers
-                .iter()
-                .find(|p| !prior_tried.contains(p) && streams.contains_key(p))
-                .cloned()
-        })
-    };
-
-    let peer = match next_peer {
-        Some(p) => p,
-        None => {
-            debug!(
-                "COMPACT_GET_NO_RETRY_PEER: {:02x?}... exhausted announcers — falling back to legacy",
-                &hash[..4]
-            );
-            mark_compact_failed_and_fallback(state, hash).await;
-            return;
-        }
-    };
-
-    // Insert a fresh PendingCompactGet covering the new attempt; tried
-    // accumulates prior attempts plus this one.
-    let mut tried = prior_tried;
-    tried.insert(peer.clone());
-    state.pending_compact_get.write().await.insert(
-        hash,
-        PendingCompactGet {
-            peer: peer.clone(),
-            started_at: Instant::now(),
-            tried,
-        },
-    );
-
-    let frame = build_compact_msg_set_get(&hash);
-    let frame_len = frame.len();
-    match send_to_peer_stream(state, peer.clone(), StreamType::CompactTxSet, &frame).await {
-        Ok(_) => {
-            state
-                .metrics
-                .compact_get_retry
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .metrics
-                .compact_get_sent
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .metrics
-                .compact_get_bytes_sent
-                .fetch_add(frame_len as u64, Ordering::Relaxed);
-            state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
-            state
-                .metrics
-                .byte_write
-                .fetch_add(frame_len as u64, Ordering::Relaxed);
-            info!(
-                "COMPACT_GET_RETRY: Re-requested compact tx set {:02x?}... from announcer {}",
-                &hash[..4],
-                peer
-            );
-        }
-        Err(e) => {
-            state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
-            warn!(
-                "COMPACT_GET_RETRY_SEND_FAIL: {:02x?}... to {}: {} — falling back to legacy",
-                &hash[..4],
-                peer,
-                e
-            );
-            state.pending_compact_get.write().await.remove(&hash);
-            mark_compact_failed_and_fallback(state, hash).await;
-        }
-    }
 }
 
 /// Retry an in-flight reconstruction's `COMPACT_TX_SET_GET_TXS` against the
@@ -3343,49 +3187,10 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
             }
         }
 
-        // 3. Sweep stale compact-protocol pending state. The disconnect path
+        // 3. Sweep stale GET_TXS reconstructions. The disconnect path
         //    handles peer-down cleanup, but a peer can stay connected and
-        //    silently drop a request — these timeouts catch that.
+        //    silently drop our GET_TXS — this timeout catches that.
         let now = Instant::now();
-
-        let timed_out_get: Vec<([u8; 32], HashSet<PeerId>)> = {
-            let mut pending = state.pending_compact_get.write().await;
-            let mut out = Vec::new();
-            // Take ownership of the timed-out entries so we can use their
-            // `tried` set when picking the next announcer.
-            let timed_hashes: Vec<[u8; 32]> = pending
-                .iter()
-                .filter_map(|(h, pcg)| {
-                    if now.duration_since(pcg.started_at) > COMPACT_GET_TIMEOUT {
-                        Some(*h)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            for h in timed_hashes {
-                if let Some(pcg) = pending.remove(&h) {
-                    out.push((h, pcg.tried));
-                }
-            }
-            out
-        };
-        if !timed_out_get.is_empty() {
-            state
-                .metrics
-                .compact_get_timeout
-                .fetch_add(timed_out_get.len() as u64, Ordering::Relaxed);
-        }
-        for (hash, tried) in timed_out_get {
-            warn!(
-                "COMPACT_GET_TIMEOUT: Compact GET for {:02x?}... timed out — retrying next announcer",
-                &hash[..4]
-            );
-            let state = Arc::clone(&state);
-            tokio::spawn(async move {
-                retry_compact_get_or_fallback(&state, hash, tried).await;
-            });
-        }
 
         let timed_out_recon: Vec<[u8; 32]> = {
             let mut pending = state.pending_compact_reconstructions.write().await;
@@ -3405,16 +3210,6 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
                 .metrics
                 .compact_reconstruction_timeout
                 .fetch_add(timed_out_recon.len() as u64, Ordering::Relaxed);
-            // M4: Mark these hashes failed synchronously, before spawning
-            // the legacy fallback. If we wait until the spawn runs, a
-            // concurrent fetch_txset_compact_first(hash) between this point
-            // and the spawn could see no pending entry, no compact_failed
-            // entry, walk the announcer list, and start a redundant compact
-            // GET that races against the legacy fetch.
-            let mut failed = state.compact_failed.write().await;
-            for h in &timed_out_recon {
-                failed.put(*h, ());
-            }
         }
         for hash in timed_out_recon {
             warn!(
@@ -3533,183 +3328,13 @@ async fn inv_getdata_housekeeping_task(state: Arc<SharedState>) {
 // ─────────────────────────────────────────────────────────────────────────
 // TX set fetching
 //
-// `fetch_txset_compact_first` is the new entry point: try `COMPACT_TX_SET_GET`
-// against an announcing peer (from `compact_announcers`) on the new stream;
-// reconstruction happens on the response (see `handle_received_compact_set`).
-//
-// `fetch_txset_legacy` is the original behavior, used as a fallback when
-// the compact path can't make progress (no announcer connected, or
-// reconstruction failed and `compact_failed` is set).
+// All active fetches go through `fetch_txset_legacy`: full XDR over the
+// dedicated TxSet stream. Compact tx sets are obtained only as passive
+// recipients of the optimistic SCP-channel push (see
+// `handle_received_compact_announcement` and `handle_received_compact_set`).
+// On reconstruction failure we fall back here via
+// `mark_compact_failed_and_fallback`.
 // ─────────────────────────────────────────────────────────────────────────
-
-async fn fetch_txset_compact_first(state: &Arc<SharedState>, hash: [u8; 32]) {
-    // Short-circuit if compact has already failed for this hash.
-    {
-        let failed = state.compact_failed.read().await;
-        if failed.contains(&hash) {
-            debug!(
-                "TXSET_FETCH_LEGACY (compact_failed cached): {:02x?}...",
-                &hash[..4]
-            );
-            fetch_txset_legacy(state, hash).await;
-            return;
-        }
-    }
-
-    // Dedup against an in-flight reconstruction. If we've already received
-    // a CompactTxSet announcement for this hash and are waiting on a
-    // GET_TXS response, sending another SetGet would just trigger a fresh
-    // CompactTxSet response and a redundant reconstruction round.
-    if state
-        .pending_compact_reconstructions
-        .read()
-        .await
-        .contains_key(&hash)
-    {
-        debug!(
-            "COMPACT_RECON_PENDING: {:02x?}... already reconstructing, skipping fetch",
-            &hash[..4]
-        );
-        return;
-    }
-
-    // Dedup against pending compact GET (live peer only) and pending legacy
-    // fetch. If a stale `pending_compact_get` entry exists for a now-
-    // disconnected peer, we'll preserve its `tried` set below so the next
-    // attempt doesn't re-pick already-failed peers.
-    {
-        let pending_compact = state.pending_compact_get.read().await;
-        if let Some(pcg) = pending_compact.get(&hash) {
-            let streams = state.peer_streams.read().await;
-            if streams.contains_key(&pcg.peer) {
-                debug!(
-                    "COMPACT_GET_DEDUP: {:02x?}... already requested from {}",
-                    &hash[..4],
-                    pcg.peer
-                );
-                return;
-            }
-        }
-        let pending_legacy = state.pending_txset_requests.read().await;
-        if let Some((p, _)) = pending_legacy.get(&hash) {
-            let streams = state.peer_streams.read().await;
-            if streams.contains_key(p) {
-                debug!(
-                    "TXSET_FETCH_DEDUP (legacy): {:02x?}... already requested from {}",
-                    &hash[..4],
-                    p
-                );
-                return;
-            }
-        }
-    }
-
-    // Take any prior `pending_compact_get` entry for this hash so its
-    // `tried` set survives into the new attempt. The dedup branch above
-    // already returned early if the recorded peer was still connected, so
-    // anything we find here is for a disconnected peer (or the disconnect
-    // cleanup raced ahead).
-    let prior_tried: HashSet<PeerId> = state
-        .pending_compact_get
-        .write()
-        .await
-        .remove(&hash)
-        .map(|pcg| pcg.tried)
-        .unwrap_or_default();
-
-    // Pick a connected announcer that we haven't already tried.
-    let chosen_peer = {
-        let mut announcers = state.compact_announcers.write().await;
-        let streams = state.peer_streams.read().await;
-        announcers.get(&hash).and_then(|peers| {
-            peers
-                .iter()
-                .find(|p| streams.contains_key(p) && !prior_tried.contains(p))
-                .cloned()
-        })
-    };
-
-    let peer = match chosen_peer {
-        Some(p) => p,
-        None => {
-            // No fresh announcer (or none of them are connected). If we had
-            // any tried history, hand off to the retry helper which falls
-            // back to legacy on exhaustion. Otherwise go straight to legacy.
-            if prior_tried.is_empty() {
-                debug!(
-                    "COMPACT_NO_ANNOUNCER: No connected announcer for {:02x?}... — using legacy fetch",
-                    &hash[..4]
-                );
-                fetch_txset_legacy(state, hash).await;
-            } else {
-                debug!(
-                    "COMPACT_GET_EXHAUSTED: {:02x?}... no fresh announcers (tried {}) — falling back to legacy",
-                    &hash[..4],
-                    prior_tried.len()
-                );
-                mark_compact_failed_and_fallback(state, hash).await;
-            }
-            return;
-        }
-    };
-
-    // Record pending compact GET — merge the freshly-chosen peer into the
-    // accumulated tried set so future timeouts don't re-pick it.
-    let mut tried = prior_tried;
-    tried.insert(peer.clone());
-    state.pending_compact_get.write().await.insert(
-        hash,
-        PendingCompactGet {
-            peer: peer.clone(),
-            started_at: Instant::now(),
-            tried,
-        },
-    );
-
-    let frame = build_compact_msg_set_get(&hash);
-    let frame_len = frame.len();
-    match send_to_peer_stream(state, peer.clone(), StreamType::CompactTxSet, &frame).await {
-        Ok(_) => {
-            state
-                .metrics
-                .compact_get_sent
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .metrics
-                .compact_get_bytes_sent
-                .fetch_add(frame_len as u64, Ordering::Relaxed);
-            state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
-            state
-                .metrics
-                .byte_write
-                .fetch_add(frame_len as u64, Ordering::Relaxed);
-            info!(
-                "COMPACT_GET_SENT: Requested compact tx set {:02x?}... from announcer {}",
-                &hash[..4],
-                peer
-            );
-        }
-        Err(e) => {
-            state.metrics.error_write.fetch_add(1, Ordering::Relaxed);
-            warn!(
-                "COMPACT_GET_SEND_FAIL: {:02x?}... to {}: {} — retrying next announcer",
-                &hash[..4],
-                peer,
-                e
-            );
-            // Hand off to retry helper which preserves `tried` and either
-            // picks the next un-tried announcer or falls back to legacy.
-            let prior_tried = state
-                .pending_compact_get
-                .write()
-                .await
-                .remove(&hash)
-                .map(|pcg| pcg.tried)
-                .unwrap_or_default();
-            retry_compact_get_or_fallback(state, hash, prior_tried).await;
-        }
-    }
-}
 
 async fn fetch_txset_legacy(state: &Arc<SharedState>, hash: [u8; 32]) {
     // Dedup against existing legacy fetch.

@@ -76,8 +76,6 @@ struct OverlayMetrics
     medida::Meter& mCompactAnnounceBytesSent;
     medida::Meter& mCompactAnnounceRecv;
     medida::Meter& mCompactAnnounceBytesRecv;
-    medida::Meter& mCompactGetSent;
-    medida::Meter& mCompactGetBytesSent;
     medida::Meter& mCompactGetRecv;
     medida::Meter& mCompactGetBytesRecv;
     medida::Meter& mCompactGetTxsSent;
@@ -97,9 +95,7 @@ struct OverlayMetrics
     medida::Meter& mCompactReconSkipCached;
 
     // ── Pending-state housekeeping (timeouts and retries) ──
-    medida::Meter& mCompactGetTimeout;
     medida::Meter& mCompactReconstructionTimeout;
-    medida::Meter& mCompactGetRetry;
     medida::Meter& mCompactGetTxsRetry;
 
     // ── Reconstructed full tx-set size (bytes) ──

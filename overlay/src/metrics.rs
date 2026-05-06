@@ -124,10 +124,9 @@ pub struct OverlayMetrics {
     /// CompactTxSet announcements received on the SCP stream
     pub compact_announce_recv: AtomicU64,
     pub compact_announce_bytes_recv: AtomicU64,
-    /// CompactTxSetGet messages sent on the compact_txset stream
-    pub compact_get_sent: AtomicU64,
-    pub compact_get_bytes_sent: AtomicU64,
     /// CompactTxSetGet messages received on the compact_txset stream
+    /// (server-side: peers may still actively request compact tx sets from
+    /// us; we never send `CompactTxSetGet` ourselves).
     pub compact_get_recv: AtomicU64,
     pub compact_get_bytes_recv: AtomicU64,
     /// CompactTxSetGetTxs messages sent on the compact_txset stream
@@ -155,16 +154,9 @@ pub struct OverlayMetrics {
     pub compact_recon_failed_fallback_legacy: AtomicU64,
 
     // ═══ Pending-state housekeeping timeouts ═══
-    /// Outstanding `COMPACT_TX_SET_GET` requests that timed out without a
-    /// response (the housekeeping sweep marked them failed and fell back to
-    /// legacy).
-    pub compact_get_timeout: AtomicU64,
     /// `PendingReconstruction` entries waiting on a `GET_TXS` response that
     /// timed out (housekeeping sweep marked them failed and fell back).
     pub compact_reconstruction_timeout: AtomicU64,
-    /// `COMPACT_TX_SET_GET` requests resent to the next announcer because the
-    /// first announcer timed out, disconnected, or the initial send failed.
-    pub compact_get_retry: AtomicU64,
     /// `COMPACT_TX_SET_GET_TXS` requests resent to the next announcer because
     /// the peer we'd already asked disconnected mid-reconstruction.
     pub compact_get_txs_retry: AtomicU64,
@@ -230,8 +222,6 @@ impl Default for OverlayMetrics {
             compact_announce_bytes_sent: AtomicU64::new(0),
             compact_announce_recv: AtomicU64::new(0),
             compact_announce_bytes_recv: AtomicU64::new(0),
-            compact_get_sent: AtomicU64::new(0),
-            compact_get_bytes_sent: AtomicU64::new(0),
             compact_get_recv: AtomicU64::new(0),
             compact_get_bytes_recv: AtomicU64::new(0),
             compact_get_txs_sent: AtomicU64::new(0),
@@ -249,9 +239,7 @@ impl Default for OverlayMetrics {
             compact_recon_partial: AtomicU64::new(0),
             compact_recon_hash_mismatch: AtomicU64::new(0),
             compact_recon_failed_fallback_legacy: AtomicU64::new(0),
-            compact_get_timeout: AtomicU64::new(0),
             compact_reconstruction_timeout: AtomicU64::new(0),
-            compact_get_retry: AtomicU64::new(0),
             compact_get_txs_retry: AtomicU64::new(0),
             compact_recon_skip_cached: AtomicU64::new(0),
             compact_recon_lock_hold_us_sum: AtomicU64::new(0),
@@ -322,8 +310,6 @@ impl OverlayMetrics {
             compact_announce_bytes_sent: self.compact_announce_bytes_sent.load(ORD),
             compact_announce_recv: self.compact_announce_recv.load(ORD),
             compact_announce_bytes_recv: self.compact_announce_bytes_recv.load(ORD),
-            compact_get_sent: self.compact_get_sent.load(ORD),
-            compact_get_bytes_sent: self.compact_get_bytes_sent.load(ORD),
             compact_get_recv: self.compact_get_recv.load(ORD),
             compact_get_bytes_recv: self.compact_get_bytes_recv.load(ORD),
             compact_get_txs_sent: self.compact_get_txs_sent.load(ORD),
@@ -343,9 +329,7 @@ impl OverlayMetrics {
             compact_recon_failed_fallback_legacy: self
                 .compact_recon_failed_fallback_legacy
                 .load(ORD),
-            compact_get_timeout: self.compact_get_timeout.load(ORD),
             compact_reconstruction_timeout: self.compact_reconstruction_timeout.load(ORD),
-            compact_get_retry: self.compact_get_retry.load(ORD),
             compact_get_txs_retry: self.compact_get_txs_retry.load(ORD),
             compact_recon_skip_cached: self.compact_recon_skip_cached.load(ORD),
             compact_recon_lock_hold_us_sum: self.compact_recon_lock_hold_us_sum.load(ORD),
@@ -458,8 +442,6 @@ pub struct MetricsSnapshot {
     pub compact_announce_bytes_sent: u64,
     pub compact_announce_recv: u64,
     pub compact_announce_bytes_recv: u64,
-    pub compact_get_sent: u64,
-    pub compact_get_bytes_sent: u64,
     pub compact_get_recv: u64,
     pub compact_get_bytes_recv: u64,
     pub compact_get_txs_sent: u64,
@@ -483,9 +465,7 @@ pub struct MetricsSnapshot {
     pub compact_recon_failed_fallback_legacy: u64,
 
     // Pending-state housekeeping timeouts
-    pub compact_get_timeout: u64,
     pub compact_reconstruction_timeout: u64,
-    pub compact_get_retry: u64,
     pub compact_get_txs_retry: u64,
     pub compact_recon_skip_cached: u64,
 

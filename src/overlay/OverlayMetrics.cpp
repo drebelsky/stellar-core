@@ -66,10 +66,6 @@ OverlayMetrics::OverlayMetrics(Application& app)
           {"overlay", "compact", "announce-recv"}, "message"))
     , mCompactAnnounceBytesRecv(app.getMetrics().NewMeter(
           {"overlay", "compact", "announce-bytes-recv"}, "byte"))
-    , mCompactGetSent(app.getMetrics().NewMeter(
-          {"overlay", "compact", "get-sent"}, "message"))
-    , mCompactGetBytesSent(app.getMetrics().NewMeter(
-          {"overlay", "compact", "get-bytes-sent"}, "byte"))
     , mCompactGetRecv(app.getMetrics().NewMeter(
           {"overlay", "compact", "get-recv"}, "message"))
     , mCompactGetBytesRecv(app.getMetrics().NewMeter(
@@ -100,12 +96,8 @@ OverlayMetrics::OverlayMetrics(Application& app)
           {"overlay", "compact", "recon-failed-fallback-legacy"}, "set"))
     , mCompactReconSkipCached(app.getMetrics().NewMeter(
           {"overlay", "compact", "recon-skip-cached"}, "set"))
-    , mCompactGetTimeout(app.getMetrics().NewMeter(
-          {"overlay", "compact", "get-timeout"}, "timeout"))
     , mCompactReconstructionTimeout(app.getMetrics().NewMeter(
           {"overlay", "compact", "reconstruction-timeout"}, "timeout"))
-    , mCompactGetRetry(app.getMetrics().NewMeter(
-          {"overlay", "compact", "get-retry"}, "retry"))
     , mCompactGetTxsRetry(app.getMetrics().NewMeter(
           {"overlay", "compact", "get-txs-retry"}, "retry"))
     , mReconstructedFullSizeHistogram(app.getMetrics().NewHistogram(

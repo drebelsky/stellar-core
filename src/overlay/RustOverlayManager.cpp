@@ -454,8 +454,6 @@ RustOverlayManager::syncOverlayMetrics()
     markDelta(m.mCompactAnnounceBytesSent, "compact_announce_bytes_sent");
     markDelta(m.mCompactAnnounceRecv, "compact_announce_recv");
     markDelta(m.mCompactAnnounceBytesRecv, "compact_announce_bytes_recv");
-    markDelta(m.mCompactGetSent, "compact_get_sent");
-    markDelta(m.mCompactGetBytesSent, "compact_get_bytes_sent");
     markDelta(m.mCompactGetRecv, "compact_get_recv");
     markDelta(m.mCompactGetBytesRecv, "compact_get_bytes_recv");
     markDelta(m.mCompactGetTxsSent, "compact_get_txs_sent");
@@ -476,9 +474,7 @@ RustOverlayManager::syncOverlayMetrics()
     markDelta(m.mCompactReconSkipCached, "compact_recon_skip_cached");
 
     // ── Pending-state housekeeping (timeouts and retries) ──
-    markDelta(m.mCompactGetTimeout, "compact_get_timeout");
     markDelta(m.mCompactReconstructionTimeout, "compact_reconstruction_timeout");
-    markDelta(m.mCompactGetRetry, "compact_get_retry");
     markDelta(m.mCompactGetTxsRetry, "compact_get_txs_retry");
 
     // ── Reconstructed full tx-set size histogram ──
