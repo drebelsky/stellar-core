@@ -53,7 +53,7 @@ class OverlayIPC
      * @param peerPort Port for peer TCP connections (passed to overlay)
      */
     OverlayIPC(std::string socketPath, std::string overlayBinaryPath,
-               uint16_t peerPort);
+               uint16_t peerPort, PublicKey const& nodeId);
 
     ~OverlayIPC();
 
@@ -231,6 +231,8 @@ class OverlayIPC
 
     // Protects mChannel->send() - channel is not thread-safe
     mutable std::mutex mSendMutex;
+
+    PublicKey const mNodePublicKey;
 };
 
 } // namespace stellar

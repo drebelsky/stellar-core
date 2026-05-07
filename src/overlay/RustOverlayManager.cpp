@@ -40,8 +40,8 @@ RustOverlayManager::RustOverlayManager(Application& app)
               "Creating RustOverlayManager with socket={}, binary={}, port={}",
               socketPath, binaryPath, cfg.PEER_PORT);
 
-    mOverlayIPC =
-        std::make_unique<OverlayIPC>(socketPath, binaryPath, cfg.PEER_PORT);
+    mOverlayIPC = std::make_unique<OverlayIPC>(
+        socketPath, binaryPath, cfg.PEER_PORT, cfg.NODE_SEED.getPublicKey());
 }
 
 RustOverlayManager::~RustOverlayManager()
@@ -308,8 +308,8 @@ RustOverlayManager::syncOverlayMetrics()
     auto markDelta = [&](medida::Meter& meter, std::string const& jsonField) {
         if (root.isMember(jsonField))
         {
-            markMeterDelta(meter, root[jsonField].asInt64(),
-                           mLastSyncedValues, jsonField);
+            markMeterDelta(meter, root[jsonField].asInt64(), mLastSyncedValues,
+                           jsonField);
         }
     };
 
@@ -348,8 +348,7 @@ RustOverlayManager::syncOverlayMetrics()
     if (root.isMember("recv_scp_sum_us") && root.isMember("recv_scp_count"))
     {
         auto sum = static_cast<int64_t>(root["recv_scp_sum_us"].asUInt64());
-        auto count =
-            static_cast<int64_t>(root["recv_scp_count"].asUInt64());
+        auto count = static_cast<int64_t>(root["recv_scp_count"].asUInt64());
         auto lastSum = mLastSyncedValues["recv_scp_sum_us"];
         auto lastCount = mLastSyncedValues["recv_scp_count"];
         auto deltaSum = sum - lastSum;
@@ -359,8 +358,7 @@ RustOverlayManager::syncOverlayMetrics()
             auto avgUs = deltaSum / deltaCount;
             for (int64_t i = 0; i < deltaCount; ++i)
             {
-                m.mRecvSCPMessageTimer.Update(
-                    std::chrono::microseconds{avgUs});
+                m.mRecvSCPMessageTimer.Update(std::chrono::microseconds{avgUs});
             }
         }
         mLastSyncedValues["recv_scp_sum_us"] = sum;
@@ -373,8 +371,8 @@ RustOverlayManager::syncOverlayMetrics()
     {
         auto sum =
             static_cast<int64_t>(root["flood_tx_batch_size_sum"].asUInt64());
-        auto count = static_cast<int64_t>(
-            root["flood_tx_batch_size_count"].asUInt64());
+        auto count =
+            static_cast<int64_t>(root["flood_tx_batch_size_count"].asUInt64());
         auto lastSum = mLastSyncedValues["flood_tx_batch_size_sum"];
         auto lastCount = mLastSyncedValues["flood_tx_batch_size_count"];
         auto deltaSum = sum - lastSum;
@@ -395,10 +393,8 @@ RustOverlayManager::syncOverlayMetrics()
     if (root.isMember("fetch_txset_sum_us") &&
         root.isMember("fetch_txset_count"))
     {
-        auto sum =
-            static_cast<int64_t>(root["fetch_txset_sum_us"].asUInt64());
-        auto count =
-            static_cast<int64_t>(root["fetch_txset_count"].asUInt64());
+        auto sum = static_cast<int64_t>(root["fetch_txset_sum_us"].asUInt64());
+        auto count = static_cast<int64_t>(root["fetch_txset_count"].asUInt64());
         auto lastSum = mLastSyncedValues["fetch_txset_sum_us"];
         auto lastCount = mLastSyncedValues["fetch_txset_count"];
         auto deltaSum = sum - lastSum;
@@ -408,8 +404,7 @@ RustOverlayManager::syncOverlayMetrics()
             auto avgUs = deltaSum / deltaCount;
             for (int64_t i = 0; i < deltaCount; ++i)
             {
-                m.mFetchTxSetTimer.Update(
-                    std::chrono::microseconds{avgUs});
+                m.mFetchTxSetTimer.Update(std::chrono::microseconds{avgUs});
             }
         }
         mLastSyncedValues["fetch_txset_sum_us"] = sum;
@@ -433,8 +428,7 @@ RustOverlayManager::syncOverlayMetrics()
             auto avgUs = deltaSum / deltaCount;
             for (int64_t i = 0; i < deltaCount; ++i)
             {
-                m.mTxPullLatency.Update(
-                    std::chrono::microseconds{avgUs});
+                m.mTxPullLatency.Update(std::chrono::microseconds{avgUs});
             }
         }
         mLastSyncedValues["flood_tx_pull_latency_sum_us"] = sum;
