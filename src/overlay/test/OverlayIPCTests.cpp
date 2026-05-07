@@ -361,8 +361,8 @@ TEST_CASE("Rust overlay get top transactions", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11625;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Get top transactions from empty mempool
@@ -396,8 +396,8 @@ TEST_CASE("Rust overlay TX submission", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11626;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Create a minimal valid TransactionEnvelope
@@ -486,8 +486,8 @@ TEST_CASE("Rust overlay TX inclusion", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11627;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Submit TXs with different fees
@@ -537,8 +537,8 @@ TEST_CASE("Rust overlay TX fee per op inclusion", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11628;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // TX1: 200 fee / 2 ops = 100 per op
@@ -587,8 +587,8 @@ TEST_CASE("Rust overlay mempool eviction", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11629;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Submit many low-fee TXs first
@@ -647,8 +647,8 @@ TEST_CASE("Rust overlay TX deduplication", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11630;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Submit the same TX twice
@@ -687,8 +687,8 @@ TEST_CASE("Rust overlay mempool clear on externalize", "[overlay-ipc][.]")
     std::string socketPath = tmpDir.getName() + "/overlay.sock";
     uint16_t peerPort = 11631;
 
-    auto ipc =
-        std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort, PublicKey{});
+    auto ipc = std::make_unique<OverlayIPC>(socketPath, overlayBinary, peerPort,
+                                            PublicKey{});
     REQUIRE(ipc->start());
 
     // Submit a TX
@@ -751,10 +751,10 @@ TEST_CASE("Rust overlay TX flooding between peers", "[overlay-ipc][.]")
     uint16_t peerPortA = 11640;
     uint16_t peerPortB = 11641;
 
-    auto ipcA =
-        std::make_unique<OverlayIPC>(socketPathA, overlayBinary, peerPortA, PublicKey{});
-    auto ipcB =
-        std::make_unique<OverlayIPC>(socketPathB, overlayBinary, peerPortB, PublicKey{});
+    auto ipcA = std::make_unique<OverlayIPC>(socketPathA, overlayBinary,
+                                             peerPortA, PublicKey{});
+    auto ipcB = std::make_unique<OverlayIPC>(socketPathB, overlayBinary,
+                                             peerPortB, PublicKey{});
 
     REQUIRE(ipcA->start());
     REQUIRE(ipcB->start());

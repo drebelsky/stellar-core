@@ -83,9 +83,9 @@ class Upgrades
     UpgradeParameters const& getParameters() const;
 
     // create upgrades for given ledger
-    std::vector<LedgerUpgrade>
-    createUpgradesFor(LedgerHeader const& lclHeader, LedgerSnapshot const& ls,
-                      Config const& cfg) const;
+    std::vector<LedgerUpgrade> createUpgradesFor(LedgerHeader const& lclHeader,
+                                                 LedgerSnapshot const& ls,
+                                                 Config const& cfg) const;
 
     // apply upgrade to ledger header
     static void applyTo(LedgerUpgrade const& upgrade, Application& app,

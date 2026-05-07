@@ -1409,7 +1409,8 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     // Cache the TX set in Rust overlay so it can serve it to other peers.
     // When a peer receives an SCP message referencing this TX set hash,
     // they'll request it via TX set fetching, and Rust needs the XDR.
-    // Note: Rust overlay only supports GeneralizedTransactionSet (protocol >= 20)
+    // Note: Rust overlay only supports GeneralizedTransactionSet (protocol >=
+    // 20)
     if (proposedSet->isGeneralizedTxSet())
     {
         GeneralizedTransactionSet xdrTxSet;
@@ -1438,7 +1439,8 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger,
     std::vector<LedgerUpgrade> upgrades;
     {
         LedgerSnapshot ls(mApp);
-        upgrades = mUpgrades.createUpgradesFor(lcl.header, ls, mApp.getConfig());
+        upgrades =
+            mUpgrades.createUpgradesFor(lcl.header, ls, mApp.getConfig());
     }
     for (auto const& upgrade : upgrades)
     {
