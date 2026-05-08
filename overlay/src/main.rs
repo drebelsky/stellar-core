@@ -1337,6 +1337,21 @@ impl App {
                 let compact_set_cache = Arc::clone(&self.compact_set_cache);
                 let handle = self.libp2p_handle.clone();
                 tokio::spawn(async move {
+                    {
+                        // check if we already have this tx set in the compact cache before doing
+                        // the more expensive generation step
+                        let mut cache = compact_set_cache.lock().unwrap();
+                        if cache.contains(&tx_set_hash) {
+                            info!(
+                                "BroadcastCompactSet {:02x?}... already in compact cache, skipping generation",
+                                &tx_set_hash[..4],
+                            );
+                            return;
+                        }
+                        // insert a placeholder to prevent duplicate generation if we get multiple
+                        // requests for the same set before the first one finishes
+                        cache.put(tx_set_hash, Arc::new(Vec::new()));
+                    }
                     let cached = {
                         let cache = tx_set_cache.read().await;
                         cache.get(&tx_set_hash).cloned()
@@ -1358,9 +1373,9 @@ impl App {
                         let mut compact_cache = compact_set_cache.lock().unwrap();
                         if compact_cache
                             .put(tx_set_hash, compact_data.txs.into())
-                            .is_some()
+                            .is_none()
                         {
-                            warn!("BroadcastCompactSet: requested CompactSet {:02x?}... was already in compact cache, overwriting", &tx_set_hash[..4]);
+                            warn!("BroadcastCompactSet: requested CompactSet {:02x?}... wasn't in compact cache", &tx_set_hash[..4]);
                         }
                         drop(compact_cache);
                     } else {
