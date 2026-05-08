@@ -553,7 +553,7 @@ fn create_differential_indices(indices: Vec<usize>) -> Vec<u8> {
     // Create a variable-length encoding of the gaps between indices
     let mut result = Vec::new();
     encode_varint(indices[0], &mut result);
-    let mut prev_index = 0;
+    let mut prev_index = indices[0];
 
     for index in indices.into_iter().skip(1) {
         let gap = index - prev_index - 1;
