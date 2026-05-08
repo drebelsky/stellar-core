@@ -267,8 +267,7 @@ impl OverlayHandle {
                 reply: tx,
             })
             .unwrap();
-        rx.await.unwrap();
-        Vec::new()
+        rx.await.unwrap()
     }
 
     /// Submit a transaction.

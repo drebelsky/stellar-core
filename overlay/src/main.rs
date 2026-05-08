@@ -40,8 +40,9 @@ use libp2p_overlay::{
 use metrics::OverlayMetrics;
 use stellar_xdr::{
     BytesM, CompactTxSet, CompactTxSetMessage, CompactTxSetMessageType, CompactTxSetTxs,
-    GeneralizedTransactionSet, Hash, Limits, ReadXdr, TransactionEnvelope, TransactionPhase,
-    TransactionSetV1, TxSetComponent, TxSetComponentTxsMaybeDiscountedFee, VecM, WriteXdr,
+    GeneralizedTransactionSet, Hash, Limits, ParallelTxsComponent, ReadXdr, TransactionEnvelope,
+    TransactionPhase, TransactionSetV1, TxSetComponent, TxSetComponentTxsMaybeDiscountedFee, VecM,
+    WriteXdr,
 };
 
 /// Command-line arguments
@@ -487,9 +488,9 @@ fn gen_compact_tx_set(txset_hash: Hash, txset_xdr: Vec<u8>) -> CompactTxSetData 
         txs: BytesM::try_from(tx_hashes).expect("Failed to convert tx_hashes to BytesM"),
     };
 
-    let compact_xdr = compact_set
+    let compact_xdr = CompactTxSetMessage::Set(compact_set)
         .to_xdr(Limits::none())
-        .expect("Failed to serialize CompactTxSet to XDR");
+        .expect("Failed to serialize CompactTxSetMessage to XDR");
 
     CompactTxSetData {
         txs,
@@ -574,22 +575,28 @@ fn reconstruct_tx_set(
         .map(|tx| -> TransactionEnvelope { tx.expect("Failed to get all TXs for compact set") })
         .collect();
 
-    let full_tx_set = GeneralizedTransactionSet::V1(TransactionSetV1 {
-        previous_ledger_hash: request.tx_set.previous_ledger_hash,
-        phases: [TransactionPhase::V0(if txs.len() == 0 {
+    let phase0 = if txs.len() == 0 {
+        TransactionPhase::V0([].try_into().unwrap())
+    } else {
+        TransactionPhase::V0(
             [TxSetComponent::TxsetCompTxsMaybeDiscountedFee(
                 TxSetComponentTxsMaybeDiscountedFee {
-                    base_fee: None,
+                    base_fee: request.tx_set.base_fee,
                     txs: txs.try_into().expect("Too many TXs in set for V0 format"),
                 },
             )]
             .try_into()
-            .unwrap()
-        } else {
-            [].try_into().unwrap()
-        })]
-        .try_into()
-        .expect("Failed to create phases array for TX set"),
+            .unwrap(),
+        )
+    };
+
+    let phase1 = TransactionPhase::V1(ParallelTxsComponent::default());
+
+    let full_tx_set = GeneralizedTransactionSet::V1(TransactionSetV1 {
+        previous_ledger_hash: request.tx_set.previous_ledger_hash,
+        phases: [phase0, phase1]
+            .try_into()
+            .expect("Failed to create phases array for TX set"),
     });
 
     let full_xdr = full_tx_set
@@ -602,9 +609,10 @@ fn reconstruct_tx_set(
     let full_hash = hasher.finalize();
     if full_hash.as_slice() != request.tx_set.tx_set_hash.0 {
         panic!(
-            "Hash mismatch for full TX set: expected {:02x?}, got {:02x?}",
+            "Hash mismatch for full TX set: expected {:02x?}, got {:02x?} {:02x?}",
             &request.tx_set.tx_set_hash.0,
-            &full_hash[..]
+            &full_hash[..],
+            &full_xdr
         );
     }
 
@@ -1042,10 +1050,8 @@ impl App {
                             msg.extend_from_slice(&compact_tx_set.tx_set_hash.0);
                             msg.extend_from_slice(&(missing.len() as u32).to_be_bytes());
                             msg.extend_from_slice(&missing);
-                            // pad msg to multiple of 4 bytes
-                            for _ in 0..(4 - (msg.len() % 4)) {
-                                msg.push(0);
-                            }
+                            let rounded_size = msg.len().next_multiple_of(4);
+                            msg.resize(rounded_size, 0);
                             p2p_handle.send_compact_msg(msg, from).await;
 
                             let mut cache = pending_cache.lock().unwrap();
@@ -1085,6 +1091,7 @@ impl App {
                         msg.extend_from_slice(
                             &(CompactTxSetMessageType::SetTxs as u32).to_be_bytes(),
                         );
+                        msg.extend_from_slice(&compact_tx_set_get_txs.tx_set_hash.0);
                         msg.extend_from_slice(&(indices.len() as u32).to_be_bytes());
                         for index in indices {
                             msg.extend_from_slice(&txs[index]);

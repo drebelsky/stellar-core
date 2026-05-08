@@ -811,13 +811,10 @@ impl StellarOverlay {
             let state = Arc::clone(&self.state);
             let envelope = envelope.clone();
             tokio::spawn(async move {
-                match send_to_peer_stream(&state, peer_id.clone(), StreamType::Scp, &envelope).await
+                match send_to_peer_stream(&state, peer_id.clone(), StreamType::TxSet, &envelope)
+                    .await
                 {
                     Ok(_) => {
-                        state
-                            .metrics
-                            .send_scp_message
-                            .fetch_add(1, Ordering::Relaxed);
                         state.metrics.message_write.fetch_add(1, Ordering::Relaxed);
                         state
                             .metrics
