@@ -1138,11 +1138,17 @@ impl App {
                     let send_txset = self.send_tx_set_to_core.clone();
                     let metrics = Arc::clone(&self.metrics);
                     tokio::spawn(async move {
-                        let mut request = {
-                            let mut pending = pending_cache.lock().unwrap();
-                            pending
-                                .pop(&compact_tx_set_txs.tx_set_hash)
-                                .expect("Received SetTxs for unknown compact tx set hash")
+                        let Some(mut request) = pending_cache
+                            .lock()
+                            .unwrap()
+                            .pop(&compact_tx_set_txs.tx_set_hash)
+                        else {
+                            warn!(
+                                "Received SetTxs for unknown compact set {:02x?} from {}",
+                                &compact_tx_set_txs.tx_set_hash.0[..4],
+                                from
+                            );
+                            return;
                         };
 
                         let mut indices = HashMap::<[u8; 6], usize>::new();
