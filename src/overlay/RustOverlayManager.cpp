@@ -81,6 +81,8 @@ RustOverlayManager::start()
 
     mOverlayIPC->setPeerConfig(cfg.KNOWN_PEERS, cfg.PREFERRED_PEERS,
                                cfg.PEER_PORT);
+    mOverlayIPC->setCompactForceRequestTxsPct(
+        cfg.COMPACT_FORCE_REQUEST_TXS_PCT);
 
     CLOG_INFO(Overlay, "RustOverlayManager started, peer_port={}",
               cfg.PEER_PORT);

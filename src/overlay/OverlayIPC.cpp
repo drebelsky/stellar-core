@@ -717,6 +717,18 @@ OverlayIPC::setPeerConfig(std::vector<std::string> const& knownPeers,
 }
 
 void
+OverlayIPC::setCompactForceRequestTxsPct(uint32_t percentage)
+{
+    IPCMessage msg;
+    msg.type = IPCMessageType::COMPACT_FORCE_REQUEST_TXS_PCT;
+    msg.payload.resize(4);
+    std::memcpy(msg.payload.data(), &percentage, 4);
+
+    std::lock_guard<std::mutex> lock(mSendMutex);
+    mChannel->send(msg);
+}
+
+void
 OverlayIPC::requestScpState(uint32_t ledgerSeq)
 {
     if (!mChannel || !mChannel->isConnected())

@@ -60,6 +60,11 @@ pub enum MessageType {
     /// Request overlay metrics snapshot (empty payload)
     RequestOverlayMetrics = 13,
 
+    /// Set the compact flow to always request at least this percentage of
+    /// transactions from the peer.
+    /// Payload: [percentage:u32]
+    CompactForceRequestTxsPct = 14,
+
     // ═══ Overlay → Core (Critical Path) ═══
     /// Received SCP envelope from network
     ScpReceived = 100,
@@ -113,6 +118,7 @@ impl TryFrom<u32> for MessageType {
             11 => Ok(MessageType::RequestTxSet),
             12 => Ok(MessageType::CacheTxSet),
             13 => Ok(MessageType::RequestOverlayMetrics),
+            14 => Ok(MessageType::CompactForceRequestTxsPct),
             100 => Ok(MessageType::ScpReceived),
             101 => Ok(MessageType::TopTxsResponse),
             102 => Ok(MessageType::PeerRequestsScpState),

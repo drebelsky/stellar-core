@@ -147,6 +147,8 @@ class OverlayIPC
                        std::vector<std::string> const& preferredPeers,
                        uint16_t listenPort);
 
+    void setCompactForceRequestTxsPct(uint32_t percentage);
+
     /**
      * Request a TX set by hash from peers (asynchronous).
      *

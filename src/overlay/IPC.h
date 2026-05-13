@@ -80,6 +80,11 @@ enum class IPCMessageType : uint32_t
     /// Response: OVERLAY_METRICS_RESPONSE with JSON payload
     REQUEST_OVERLAY_METRICS = 13,
 
+    /// Set the compact flow to always request at least this percentage of
+    /// transactions from the peer.
+    /// Payload: [percentage:u32]
+    COMPACT_FORCE_REQUEST_TXS_PCT = 14,
+
     // ═══ Overlay → Core (Critical Path) ═══
 
     /// Received SCP envelope from network

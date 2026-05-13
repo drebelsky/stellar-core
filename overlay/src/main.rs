@@ -22,7 +22,7 @@ use std::hash::Hasher;
 use std::net::SocketAddr;
 use std::num::NonZero;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -647,6 +647,8 @@ struct App {
     overlay_handle: OverlayHandle,
     /// Cache for built TX sets
     tx_set_cache: Arc<RwLock<TxSetCache>>,
+    /// percentage of compact txs to always request
+    compact_force_request_txs_pct: AtomicU32,
     /// Cache for compact tx sets
     // std::sync::Mutex is sufficient here since we don't do asynchronous work with the lock held
     compact_set_cache: Arc<std::sync::Mutex<lru::LruCache<Hash256, Arc<Vec<Vec<u8>>>>>>,
@@ -812,6 +814,7 @@ impl App {
             metrics,
             // Since this is only for compact sets we're hosting, 10 should be more than enough
             compact_set_cache: Arc::new(lru::LruCache::new(NonZero::new(10).unwrap()).into()),
+            compact_force_request_txs_pct: AtomicU32::new(0),
         })
     }
 
@@ -1027,6 +1030,8 @@ impl App {
                     let p2p_handle = self.libp2p_handle.clone();
                     let send_txset = self.send_tx_set_to_core.clone();
                     let metrics = Arc::clone(&self.metrics);
+                    let request_percent =
+                        self.compact_force_request_txs_pct.load(Ordering::Relaxed);
                     metrics.compact_count.fetch_add(1, Ordering::Relaxed);
                     metrics
                         .compact_size
@@ -1038,9 +1043,11 @@ impl App {
                         let mut missing = Vec::new();
                         let txs_serialized =
                             overlay_handle.get_txs_by_hashes(hashes.to_vec(), key).await;
+                        let force_missing_count =
+                            (txs_serialized.len() * request_percent as usize + 99) / 100;
                         let mut txs = Vec::with_capacity(txs_serialized.len());
                         for (i, tx) in txs_serialized.into_iter().enumerate() {
-                            if tx.is_empty() {
+                            if i < force_missing_count || tx.is_empty() {
                                 txs.push(None);
                                 missing.push(i);
                             } else {
@@ -1531,6 +1538,13 @@ impl App {
                     ledger_seq: current_seq,
                     tx_hashes: vec![],
                 });
+            }
+
+            MessageType::CompactForceRequestTxsPct => {
+                self.compact_force_request_txs_pct.store(
+                    u32::from_le_bytes(msg.payload[0..4].try_into().unwrap()),
+                    Ordering::Relaxed,
+                );
             }
 
             MessageType::SubmitTx => {
