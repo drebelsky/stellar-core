@@ -71,7 +71,7 @@ impl Default for GetData {
 /// Parsed TX stream message
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxStreamMessage {
-    /// Full transaction data
+    /// Full transaction data (canonical XDR, validated at ingress)
     Tx(Vec<u8>),
     /// Batch of INV announcements
     InvBatch(InvBatch),
@@ -84,7 +84,9 @@ impl TxStreamMessage {
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         match self {
             TxStreamMessage::Tx(data) => {
-                crate::xdr::encode_transaction_message_from_xdr(data).map_err(to_invalid_data)
+                // `data` is already-validated canonical envelope XDR (from
+                // the tx buffer), so wrapping is a discriminant prepend.
+                Ok(crate::xdr::wrap_transaction_message(data))
             }
             TxStreamMessage::InvBatch(batch) => {
                 let hashes = batch
@@ -106,13 +108,13 @@ impl TxStreamMessage {
     }
 
     /// Decode StellarMessage XDR from the TX stream.
+    ///
+    /// Note: `Transaction` messages are not handled here — the dispatch
+    /// site parses them directly into a `ParsedTx` (one parse for
+    /// validation *and* flooding metadata) via
+    /// `xdr::parse_supported_transaction` on the payload slice.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
         match StellarMessage::from_xdr(data, Limits::none()).map_err(to_invalid_data)? {
-            StellarMessage::Transaction(envelope) => {
-                let tx =
-                    crate::xdr::canonical_transaction_xdr(envelope).map_err(to_invalid_data)?;
-                Ok(TxStreamMessage::Tx(tx))
-            }
             StellarMessage::FloodAdvert(advert) => {
                 let entries = advert
                     .tx_hashes
@@ -150,9 +152,16 @@ mod tests {
         let tx_data = valid_transaction_xdr(1000, 1, 1);
         let msg = TxStreamMessage::Tx(tx_data.clone());
 
+        // The encoded form must be a parseable Transaction StellarMessage
+        // whose payload is the original envelope bytes (the dispatch site
+        // slices the payload and parses it as a TransactionEnvelope).
         let encoded = msg.encode().unwrap();
-        let decoded = TxStreamMessage::decode(&encoded).unwrap();
-        assert_eq!(msg, decoded);
+        assert_eq!(
+            crate::xdr::peek_message_type(&encoded),
+            Some(stellar_xdr::curr::MessageType::Transaction)
+        );
+        let parsed = crate::xdr::parse_supported_transaction(&encoded[4..]).unwrap();
+        assert_eq!(parsed.envelope_xdr, tx_data);
     }
 
     #[test]

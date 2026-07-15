@@ -1,29 +1,48 @@
 //! Stellar XDR parsing helpers for overlay wire data.
+//!
+//! Perf note: XDR is a canonical encoding — a value has exactly one valid
+//! byte representation, and `from_xdr` requires the input to be consumed
+//! in full. Bytes that parse successfully therefore *are* the canonical
+//! encoding, so nothing here re-encodes after a successful parse. A
+//! `StellarMessage` is encoded as a 4-byte big-endian discriminant
+//! followed by the arm's own encoding, so wrapping already-validated
+//! payload bytes is a prepend, not a decode/encode round trip. The
+//! equivalence tests below pin both assumptions against the stellar-xdr
+//! encoder.
 
 use sha2::{Digest, Sha256};
 use std::fmt;
 use stellar_xdr::curr as xdr;
 use xdr::{
-    GeneralizedTransactionSet, Limits, MuxedAccount, Operation, OperationBody, ReadXdr, ScpBallot,
-    ScpEnvelope, ScpStatementPledges, StellarMessage, StellarValue, TransactionEnvelope, Uint256,
-    WriteXdr,
+    Limits, MessageType, MuxedAccount, Operation, OperationBody, ReadXdr, ScpBallot, ScpEnvelope,
+    ScpStatementPledges, StellarMessage, StellarValue, TransactionEnvelope, Uint256, WriteXdr,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TxClass {
+pub enum TxClass {
     Classic,
     Soroban,
 }
 
-#[derive(Debug)]
-pub(crate) struct ParsedTx {
-    pub(crate) envelope_xdr: Vec<u8>,
-    pub(crate) full_hash: [u8; 32],
-    pub(crate) source_account: [u8; 32],
-    pub(crate) sequence: i64,
-    pub(crate) fee: u64,
-    pub(crate) num_ops: u32,
-    pub(crate) class: TxClass,
+/// A transaction that was validated at an ingress boundary (Core IPC or a
+/// peer stream). `envelope_xdr` holds the canonical encoding and
+/// `full_hash` its SHA-256; both are computed exactly once and passed
+/// through the pipeline instead of being re-derived at every layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedTx {
+    pub envelope_xdr: Vec<u8>,
+    pub full_hash: [u8; 32],
+    pub source_account: [u8; 32],
+    pub sequence: i64,
+    pub fee: u64,
+    pub num_ops: u32,
+    pub class: TxClass,
+}
+
+impl ParsedTx {
+    pub fn fee_per_op(&self) -> i64 {
+        (self.fee / u64::from(self.num_ops.max(1))) as i64
+    }
 }
 
 #[derive(Debug)]
@@ -58,14 +77,10 @@ pub(crate) fn sha256_hash(data: &[u8]) -> [u8; 32] {
     hash
 }
 
-pub(crate) fn parse_supported_transaction(bytes: &[u8]) -> Result<ParsedTx, XdrError> {
+/// Validate transaction bytes and extract flooding metadata. The single
+/// parse on any path a transaction takes through this process.
+pub fn parse_supported_transaction(bytes: &[u8]) -> Result<ParsedTx, XdrError> {
     let envelope = TransactionEnvelope::from_xdr(bytes, Limits::none())?;
-    parse_supported_transaction_envelope(envelope)
-}
-
-pub(crate) fn parse_supported_transaction_envelope(
-    envelope: TransactionEnvelope,
-) -> Result<ParsedTx, XdrError> {
     let (source_account, sequence, fee, num_ops, class) = match &envelope {
         TransactionEnvelope::TxV0(v0) => {
             let tx = &v0.tx;
@@ -94,30 +109,15 @@ pub(crate) fn parse_supported_transaction_envelope(
         }
     };
 
-    let envelope_xdr = envelope.to_xdr(Limits::none())?;
-    let full_hash = sha256_hash(&envelope_xdr);
-
     Ok(ParsedTx {
-        envelope_xdr,
-        full_hash,
+        envelope_xdr: bytes.to_vec(),
+        full_hash: sha256_hash(bytes),
         source_account,
         sequence,
         fee,
         num_ops,
         class,
     })
-}
-
-pub(crate) fn encode_transaction_message_from_xdr(bytes: &[u8]) -> Result<Vec<u8>, XdrError> {
-    let envelope = TransactionEnvelope::from_xdr(bytes, Limits::none())?;
-    match envelope {
-        TransactionEnvelope::TxFeeBump(_) => {
-            // TODO: Support fee-bump transactions by classifying the inner
-            // transaction and using the outer fee bid for prioritization.
-            Err(XdrError::UnsupportedFeeBump)
-        }
-        envelope => encode_stellar_message(&StellarMessage::Transaction(envelope)),
-    }
 }
 
 pub(crate) fn parse_stellar_message(bytes: &[u8]) -> Result<StellarMessage, XdrError> {
@@ -128,19 +128,32 @@ pub(crate) fn encode_stellar_message(message: &StellarMessage) -> Result<Vec<u8>
     Ok(message.to_xdr(Limits::none())?)
 }
 
-pub(crate) fn canonical_transaction_xdr(
-    envelope: TransactionEnvelope,
-) -> Result<Vec<u8>, XdrError> {
-    parse_supported_transaction_envelope(envelope).map(|parsed| parsed.envelope_xdr)
+/// Read the `MessageType` discriminant of an encoded `StellarMessage`
+/// without parsing the body.
+pub(crate) fn peek_message_type(data: &[u8]) -> Option<MessageType> {
+    let bytes: [u8; 4] = data.get(0..4)?.try_into().ok()?;
+    MessageType::try_from(i32::from_be_bytes(bytes)).ok()
 }
 
-pub(crate) fn encode_scp_message(envelope_xdr: &[u8]) -> Result<Vec<u8>, XdrError> {
-    let envelope = ScpEnvelope::from_xdr(envelope_xdr, Limits::none())?;
-    encode_stellar_message(&StellarMessage::ScpMessage(envelope))
+/// Prepend the `StellarMessage` discriminant to an already-canonical arm
+/// payload. Callers must only pass bytes that were validated at ingress.
+fn wrap_stellar_message(message_type: MessageType, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + payload.len());
+    out.extend_from_slice(&(message_type as i32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
 }
 
-pub(crate) fn canonical_scp_envelope_xdr(envelope: ScpEnvelope) -> Result<Vec<u8>, XdrError> {
-    Ok(envelope.to_xdr(Limits::none())?)
+pub(crate) fn wrap_transaction_message(tx_xdr: &[u8]) -> Vec<u8> {
+    wrap_stellar_message(MessageType::Transaction, tx_xdr)
+}
+
+pub(crate) fn wrap_scp_message(envelope_xdr: &[u8]) -> Vec<u8> {
+    wrap_stellar_message(MessageType::ScpMessage, envelope_xdr)
+}
+
+pub(crate) fn wrap_generalized_tx_set_message(tx_set_xdr: &[u8]) -> Vec<u8> {
+    wrap_stellar_message(MessageType::GeneralizedTxSet, tx_set_xdr)
 }
 
 pub(crate) fn encode_get_scp_state(ledger_seq: u32) -> Result<Vec<u8>, XdrError> {
@@ -151,40 +164,13 @@ pub(crate) fn encode_get_tx_set(hash: [u8; 32]) -> Result<Vec<u8>, XdrError> {
     encode_stellar_message(&StellarMessage::GetTxSet(Uint256(hash)))
 }
 
-pub(crate) fn encode_generalized_tx_set_message(
-    data: &[u8],
-    expected_hash: &[u8; 32],
-) -> Result<Vec<u8>, XdrError> {
-    let tx_set = GeneralizedTransactionSet::from_xdr(data, Limits::none())?;
-    let canonical = tx_set.to_xdr(Limits::none())?;
-    let actual_hash = sha256_hash(&canonical);
-    if &actual_hash != expected_hash {
-        return Err(XdrError::Malformed(format!(
-            "tx set hash mismatch: expected {:02x?}, got {:02x?}",
-            &expected_hash[..4],
-            &actual_hash[..4]
-        )));
-    }
-    encode_stellar_message(&StellarMessage::GeneralizedTxSet(tx_set))
-}
-
-pub(crate) fn canonical_generalized_tx_set_xdr(
-    tx_set: GeneralizedTransactionSet,
-) -> Result<([u8; 32], Vec<u8>), XdrError> {
-    let canonical = tx_set.to_xdr(Limits::none())?;
-    let hash = sha256_hash(&canonical);
-    Ok((hash, canonical))
-}
-
-pub fn verify_generalized_tx_set_xdr(
-    expected_hash: &[u8; 32],
-    data: &[u8],
-) -> Result<Vec<u8>, XdrError> {
-    let tx_set = GeneralizedTransactionSet::from_xdr(data, Limits::none())?;
-    let canonical = tx_set.to_xdr(Limits::none())?;
-    let actual_hash = sha256_hash(&canonical);
+/// Check that `data` is the tx set whose contents-hash is `expected_hash`
+/// (the hash of a `GeneralizedTransactionSet` is the SHA-256 of its XDR).
+/// A hash-only check: structural validation is left to the consumer.
+pub fn checked_tx_set_hash(expected_hash: &[u8; 32], data: &[u8]) -> Result<(), XdrError> {
+    let actual_hash = sha256_hash(data);
     if &actual_hash == expected_hash {
-        Ok(canonical)
+        Ok(())
     } else {
         Err(XdrError::Malformed(format!(
             "tx set hash mismatch: expected {:02x?}, got {:02x?}",
@@ -259,12 +245,23 @@ fn classify_operations(operations: &[Operation]) -> TxClass {
     }
 }
 
+/// Canonically encode and hash a tx set (test helper).
+#[cfg(test)]
+pub(crate) fn canonical_generalized_tx_set_xdr(
+    tx_set: xdr::GeneralizedTransactionSet,
+) -> Result<([u8; 32], Vec<u8>), XdrError> {
+    let canonical = tx_set.to_xdr(Limits::none())?;
+    let hash = sha256_hash(&canonical);
+    Ok((hash, canonical))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use xdr::{
-        DecoratedSignature, Hash, Operation, ScpNomination, ScpStatementPledges, SequenceNumber,
-        StellarValueExt, TimePoint, Transaction, TransactionV1Envelope, Value, VecM,
+        DecoratedSignature, GeneralizedTransactionSet, Hash, Operation, ScpNomination,
+        ScpStatementPledges, SequenceNumber, StellarValueExt, TimePoint, Transaction,
+        TransactionV1Envelope, Value, VecM,
     };
 
     pub(crate) fn valid_transaction_xdr(fee: u32, sequence: i64, num_ops: usize) -> Vec<u8> {
@@ -290,7 +287,8 @@ pub(crate) mod tests {
         assert_eq!(parsed.num_ops, 1);
         assert_eq!(parsed.sequence, 12345);
         assert_eq!(parsed.class, TxClass::Classic);
-        assert_eq!(parsed.full_hash, sha256_hash(&parsed.envelope_xdr));
+        assert_eq!(parsed.envelope_xdr, tx_xdr);
+        assert_eq!(parsed.full_hash, sha256_hash(&tx_xdr));
     }
 
     #[test]
@@ -299,6 +297,83 @@ pub(crate) mod tests {
             parse_supported_transaction(&[1, 2, 3]),
             Err(XdrError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn rejects_trailing_garbage_after_transaction() {
+        let mut tx_xdr = valid_transaction_xdr(1000, 1, 1);
+        tx_xdr.push(0);
+        assert!(matches!(
+            parse_supported_transaction(&tx_xdr),
+            Err(XdrError::Malformed(_))
+        ));
+    }
+
+    /// Pins the assumption that bytes accepted by `from_xdr` are the
+    /// canonical encoding (so keeping the input bytes == re-encoding).
+    #[test]
+    fn accepted_transaction_bytes_are_canonical() {
+        let tx_xdr = valid_transaction_xdr(1000, 12345, 3);
+        let envelope = TransactionEnvelope::from_xdr(&tx_xdr, Limits::none()).unwrap();
+        assert_eq!(envelope.to_xdr(Limits::none()).unwrap(), tx_xdr);
+    }
+
+    #[test]
+    fn wrap_transaction_message_matches_full_encoder() {
+        let tx_xdr = valid_transaction_xdr(1000, 1, 1);
+        let envelope = TransactionEnvelope::from_xdr(&tx_xdr, Limits::none()).unwrap();
+        let full = encode_stellar_message(&StellarMessage::Transaction(envelope)).unwrap();
+        assert_eq!(wrap_transaction_message(&tx_xdr), full);
+        assert_eq!(
+            peek_message_type(&full),
+            Some(MessageType::Transaction)
+        );
+    }
+
+    #[test]
+    fn wrap_scp_message_matches_full_encoder() {
+        let mut envelope = ScpEnvelope::default();
+        envelope.statement.slot_index = 7;
+        let envelope_xdr = envelope.to_xdr(Limits::none()).unwrap();
+        let full = encode_stellar_message(&StellarMessage::ScpMessage(envelope)).unwrap();
+        assert_eq!(wrap_scp_message(&envelope_xdr), full);
+        assert_eq!(peek_message_type(&full), Some(MessageType::ScpMessage));
+        // The inbound path recovers the envelope bytes by slicing off the
+        // discriminant.
+        assert_eq!(&full[4..], envelope_xdr.as_slice());
+    }
+
+    #[test]
+    fn wrap_generalized_tx_set_message_matches_full_encoder() {
+        let tx_set = GeneralizedTransactionSet::default();
+        let tx_set_xdr = tx_set.to_xdr(Limits::none()).unwrap();
+        let full =
+            encode_stellar_message(&StellarMessage::GeneralizedTxSet(tx_set)).unwrap();
+        assert_eq!(wrap_generalized_tx_set_message(&tx_set_xdr), full);
+        assert_eq!(
+            peek_message_type(&full),
+            Some(MessageType::GeneralizedTxSet)
+        );
+        assert_eq!(&full[4..], tx_set_xdr.as_slice());
+    }
+
+    /// Pins the wire layout the txset stream handler relies on:
+    /// GetTxSet == 4-byte discriminant + 32-byte hash.
+    #[test]
+    fn get_tx_set_is_discriminant_plus_hash() {
+        let hash = [0x5a; 32];
+        let encoded = encode_get_tx_set(hash).unwrap();
+        assert_eq!(encoded.len(), 36);
+        assert_eq!(peek_message_type(&encoded), Some(MessageType::GetTxSet));
+        assert_eq!(&encoded[4..], &hash);
+    }
+
+    #[test]
+    fn checked_tx_set_hash_accepts_matching_and_rejects_mismatch() {
+        let data = b"arbitrary tx set bytes".to_vec();
+        let hash = sha256_hash(&data);
+        assert!(checked_tx_set_hash(&hash, &data).is_ok());
+        assert!(checked_tx_set_hash(&[0u8; 32], &data).is_err());
     }
 
     #[test]

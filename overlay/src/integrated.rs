@@ -11,17 +11,13 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
 use crate::flood::Mempool;
-use crate::xdr::parse_supported_transaction;
+use crate::xdr::{parse_supported_transaction, ParsedTx};
 
 /// Commands from Core to Overlay
 #[derive(Debug, Clone)]
 pub enum CoreCommand {
-    /// Submit a transaction for flooding
-    SubmitTx {
-        data: Vec<u8>,
-        fee: u64,
-        num_ops: u32,
-    },
+    /// Submit a transaction for flooding (validated/parsed by the caller)
+    SubmitTx { tx: ParsedTx },
 
     /// Request top N transactions by fee
     GetTopTxs {
@@ -69,14 +65,7 @@ impl Overlay {
     /// Handle a command from Core.
     async fn handle_core_command(&self, cmd: CoreCommand) {
         match cmd {
-            CoreCommand::SubmitTx { data, fee, num_ops } => {
-                let parsed = match parse_supported_transaction(&data) {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        debug!("[SubmitTx] dropping unsupported TX: {}", e);
-                        return;
-                    }
-                };
+            CoreCommand::SubmitTx { tx: parsed } => {
                 debug!(
                     "[SubmitTx] TX: hash={:?}, size={}, fee={}, ops={}, class={:?}",
                     &parsed.full_hash[..4],
@@ -85,12 +74,6 @@ impl Overlay {
                     parsed.num_ops,
                     parsed.class
                 );
-                if fee != parsed.fee || num_ops != parsed.num_ops {
-                    debug!(
-                        "[SubmitTx] caller metadata fee/ops=({}/{}) differs from XDR fee/ops=({}/{})",
-                        fee, num_ops, parsed.fee, parsed.num_ops
-                    );
-                }
 
                 let mut mempool = self.mempool.write().await;
                 let entry = crate::flood::TxEntry {
@@ -152,11 +135,30 @@ impl OverlayHandle {
         Self { cmd_tx }
     }
 
-    /// Submit a transaction.
+    /// Submit raw transaction bytes: validates/parses once, then submits.
+    /// The fee/num_ops arguments are advisory; the parsed XDR is
+    /// authoritative.
     pub fn submit_tx(&self, data: Vec<u8>, fee: u64, num_ops: u32) {
-        let _ = self
-            .cmd_tx
-            .send(CoreCommand::SubmitTx { data, fee, num_ops });
+        let parsed = match parse_supported_transaction(&data) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                debug!("[SubmitTx] dropping unsupported TX: {}", e);
+                return;
+            }
+        };
+        if fee != parsed.fee || num_ops != parsed.num_ops {
+            debug!(
+                "[SubmitTx] caller metadata fee/ops=({}/{}) differs from XDR fee/ops=({}/{})",
+                fee, num_ops, parsed.fee, parsed.num_ops
+            );
+        }
+        self.submit_parsed(parsed);
+    }
+
+    /// Submit a transaction that was already validated at an ingress
+    /// boundary — no XDR work happens on this path.
+    pub fn submit_parsed(&self, tx: ParsedTx) {
+        let _ = self.cmd_tx.send(CoreCommand::SubmitTx { tx });
     }
 
     /// Get top transactions by fee.

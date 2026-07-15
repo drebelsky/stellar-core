@@ -725,28 +725,23 @@ impl App {
                 }
             }
             LibP2pOverlayEvent::TxReceived { tx, from } => {
-                debug!("Received TX via QUIC from {}: {} bytes", from, tx.len());
-                self.overlay_handle.submit_tx(tx, 0, 0);
+                debug!(
+                    "Received TX via QUIC from {}: {} bytes",
+                    from,
+                    tx.envelope_xdr.len()
+                );
+                self.overlay_handle.submit_parsed(tx);
             }
             LibP2pOverlayEvent::TxSetReceived { hash, data, from } => {
+                // `hash` was computed as the SHA-256 of `data` at the stream
+                // layer, so the pair is content-addressed by construction —
+                // no re-verification needed here.
                 info!(
                     "TXSET_RECV: Received TxSet {:02x?}... ({} bytes) from {}",
                     &hash[..4],
                     data.len(),
                     from
                 );
-                let data = match xdr::verify_generalized_tx_set_xdr(&hash, &data) {
-                    Ok(canonical) => canonical,
-                    Err(e) => {
-                        warn!(
-                            "TXSET_RECV_DROP: Dropping invalid TxSet {:02x?}... from {}: {}",
-                            &hash[..4],
-                            from,
-                            e
-                        );
-                        return;
-                    }
-                };
 
                 // IMPORTANT: Cache the TxSet FIRST, before pushing to Core
                 // This ensures the TxSet is available when SCP processing resumes
@@ -1056,18 +1051,17 @@ impl App {
 
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&msg.payload[0..32]);
-                let tx_set_xdr = match xdr::verify_generalized_tx_set_xdr(&hash, &msg.payload[32..])
-                {
-                    Ok(canonical) => canonical,
-                    Err(e) => {
-                        warn!(
-                            "TXSET_CACHE_DROP: Dropping invalid TX set {:02x?}... from Core: {}",
-                            &hash[..4],
-                            e
-                        );
-                        return true;
-                    }
-                };
+                // Core is trusted: check the hash matches the bytes (cheap,
+                // catches IPC framing bugs) but skip the structural parse.
+                if let Err(e) = xdr::checked_tx_set_hash(&hash, &msg.payload[32..]) {
+                    warn!(
+                        "TXSET_CACHE_DROP: Dropping invalid TX set {:02x?}... from Core: {}",
+                        &hash[..4],
+                        e
+                    );
+                    return true;
+                }
+                let tx_set_xdr = msg.payload[32..].to_vec();
 
                 info!(
                     "TXSET_CACHE: Caching locally-built TX set {:02x?}... ({} bytes)",
@@ -1108,18 +1102,13 @@ impl App {
                     );
                 }
 
-                // Add to mempool
-                self.overlay_handle.submit_tx(
-                    parsed_tx.envelope_xdr.clone(),
-                    parsed_tx.fee,
-                    parsed_tx.num_ops,
-                );
+                // Add to mempool (already parsed — no re-parse downstream)
+                self.overlay_handle.submit_parsed(parsed_tx.clone());
 
                 // Broadcast TX via libp2p QUIC (dedicated stream)
                 let handle = self.libp2p_handle.clone();
-                let tx_data = parsed_tx.envelope_xdr;
                 tokio::spawn(async move {
-                    handle.broadcast_tx(tx_data).await;
+                    handle.broadcast_parsed_tx(parsed_tx).await;
                 });
             }
 
