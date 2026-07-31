@@ -10,23 +10,14 @@ from concurrent.futures import ProcessPoolExecutor
 import csv
 import json
 from typing import Any, Callable
-from dataclasses import dataclass
 import subprocess
+import sys
 
 import numpy as np
 import numpy.typing as npt
 
-
-@dataclass(slots=True)
-class WasmUpload:
-    size: int
-
-
-@dataclass(slots=True)
-class InvokeTransaction:
-    instructions: int
-    write_bytes: int
-    tx_size: int
+# Needed to be able to read large base64-encoded XDR blobs from the wasm_sizes table
+csv.field_size_limit(sys.maxsize)
 
 
 def make_decoder() -> Callable[[bytes], dict[str, Any]]:
@@ -61,17 +52,16 @@ def make_decoder() -> Callable[[bytes], dict[str, Any]]:
     return decode_xdr
 
 
-# Note: decode_xdr is a global that gets initialized in process_history_row so
+# Note: decode_xdr is a global that gets initialized in process_wasm_row so
 # that each Python subprocess runs an independent copy of stellar xdr decode
 decode_xdr = None
 
 
-def process_history_row(
-    row: dict[str, str],
-) -> WasmUpload | InvokeTransaction:
+def process_wasm_row(row: dict[str, str]) -> int:
     """
-    Process a soroban row from the history_transactions table.
+    Process a row from the wasm_sizes table.
     """
+
     global decode_xdr
     if decode_xdr is None:
         decode_xdr = make_decoder()
@@ -87,34 +77,11 @@ def process_history_row(
     body = operations[0]["body"]
 
     ihf = body["invoke_host_function"]
-    if "upload_contract_wasm" in ihf["host_function"]:
-        # Count wasm bytes
-        wasm = ihf["host_function"]["upload_contract_wasm"]
-        return WasmUpload(len(bytes.fromhex(wasm)))
-    else:
-        # Treat as a "normal" invoke
-        instructions = row["soroban_resources_instructions"]
-        write_bytes = row["soroban_resources_write_bytes"]
-        return InvokeTransaction(
-            int(instructions),
-            int(write_bytes),
-            len(envelope_xdr),
-        )
-
-
-def process_event_row(row: dict[str, str]) -> int:
-    """
-    Process a row from the history_events table. Must already be filtered to
-    contain only write entries. Returns an int with the number of write entries.
-    """
-    return int(json.loads(row["data_decoded"])["u64"])
-
-
-def process_classic_transaction(row: dict[str, str]) -> int:
-    """
-    Process a classic row from the history_transactions table.
-    """
-    return int(row["envelope_size"])
+    assert "host_function" in ihf
+    assert "upload_contract_wasm" in ihf["host_function"]
+    # Count wasm bytes
+    wasm = ihf["host_function"]["upload_contract_wasm"]
+    return len(bytes.fromhex(wasm))
 
 
 def to_normalized_histogram(
@@ -164,72 +131,81 @@ def to_normalized_histogram(
 
 
 def process_soroban_history(
-    history_transactions_csv: str, workers: int, max_bins: int, max_output_bins: int
+    history_transactions_csv: str, max_bins: int, max_output_bins: int
 ) -> None:
     """Generate histograms from data in the history_transactions table."""
     with open(history_transactions_csv) as f:
+        assert (
+            f.readline().strip()
+            == "soroban_resources_instructions,soroban_resources_write_bytes,envelope_size"
+        )
+        data = np.loadtxt(f, dtype=int, delimiter=",")
+    assert len(data.shape) == 2 and data.shape[1] == 3
+    print("Instructions:")
+    to_normalized_histogram(data[:, 0], max_bins, max_output_bins)
+
+    # Convert write_bytes to kilobytes
+    write_kilobytes = (data[:, 1] / 1024).round().astype(int)
+    print("\nI/O Kilobytes:")
+    to_normalized_histogram(write_kilobytes, max_bins, max_output_bins)
+
+    print("\nTransaction Size Bytes:")
+    to_normalized_histogram(data[:, 2], max_bins, max_output_bins)
+
+
+def process_wasm_sizes(
+    wasm_sizes_csv: str, workers: int, max_bins: int, max_output_bins: int
+) -> None:
+    """Generate a histogram for wasm sizes from data in the wasm_sizes table."""
+    with open(wasm_sizes_csv) as f:
         reader = csv.DictReader(f)
 
         # Decode XDR in parallel
         with ProcessPoolExecutor(workers) as executor:
-            processed_rows = list(executor.map(process_history_row, reader))
+            wasms = list(executor.map(process_wasm_row, reader))
 
-        invokes = [x for x in processed_rows if isinstance(x, InvokeTransaction)]
-        wasms = [x.size for x in processed_rows if isinstance(x, WasmUpload)]
-
-        print("Instructions:")
-        to_normalized_histogram(
-            [i.instructions for i in invokes], max_bins, max_output_bins
-        )
-
-        # Convert write_bytes to kilobytes
-        write_kilobytes = (
-            (np.array([i.write_bytes for i in invokes]) / 1024).round().astype(int)
-        )
-        print("\nI/O Kilobytes:")
-        to_normalized_histogram(write_kilobytes, max_bins, max_output_bins)
-
-        print("\nTransaction Size Bytes:")
-        to_normalized_histogram([i.tx_size for i in invokes], max_bins, max_output_bins)
-
-        print("\nWasm Size Bytes:")
-        to_normalized_histogram(wasms, max_bins, max_output_bins)
+    print("\nWasm Size Bytes:")
+    to_normalized_histogram(wasms, max_bins, max_output_bins)
 
 
 def process_soroban_events(
-    history_contract_events_csv: str, workers: int, max_bins: int, max_output_bins: int
+    history_contract_events_csv: str, max_bins: int, max_output_bins: int
 ) -> None:
     """
     Generate a histogram for data entries from data in the
     history_contract_events table.
     """
     with open(history_contract_events_csv) as f:
-        reader = csv.DictReader(f)
-
-        # Process CSV in parallel
-        with ProcessPoolExecutor(workers) as executor:
-            processed_rows = list(executor.map(process_event_row, reader))
+        assert f.readline().strip() == "topics_decoded,data_decoded"
+        start = '"[{""symbol"":""core_metrics""},{""symbol"":""write_entry""}]","{""u64"":""'
+        end = '""}"'
+        processed_rows = []
+        for line in f:
+            line = line.strip()
+            assert line.startswith(start) and line.endswith(
+                end
+            ), f"Unexpected line: {line}"
+            number = line[len(start) : -len(end)]
+            processed_rows.append(int(number))
 
         print("Data Entries:")
         to_normalized_histogram(processed_rows, max_bins, max_output_bins)
 
 
 def process_classic_transactions(
-    history_contract_events_csv: str, workers: int, max_bins: int, max_output_bins: int
+    classic_transactions_csv: str, max_bins: int, max_output_bins: int
 ) -> None:
     """
     Generate a histogram for classic data entries from data in the
     history_transactions table.
     """
-    with open(history_contract_events_csv) as f:
-        reader = csv.DictReader(f)
+    with open(classic_transactions_csv) as f:
+        assert f.readline().strip() == "envelope_size"
+        data = np.loadtxt(f, dtype=int, delimiter=",")
+    assert len(data.shape) == 1
 
-        # Process CSV in parallel
-        with ProcessPoolExecutor(workers) as executor:
-            processed_rows = list(executor.map(process_classic_transaction, reader))
-
-        print("Classic Transaction Sizes:")
-        to_normalized_histogram(processed_rows, max_bins, max_output_bins)
+    print("Classic Transaction Sizes:")
+    to_normalized_histogram(data, max_bins, max_output_bins)
 
 
 def main() -> None:
@@ -238,21 +214,53 @@ def main() -> None:
         epilog="""You can use the following sample queries as a jumping off point for writing your own queries to generate these CSV files:
 
 history_transactions sample query
-SELECT soroban_resources_instructions, soroban_resources_write_bytes, tx_envelope FROM `crypto-stellar.crypto_stellar.history_transactions` WHERE batch_run_date BETWEEN DATETIME("2024-06-24") AND DATETIME("2024-09-24") AND soroban_resources_instructions > 0
+SELECT soroban_resources_instructions, soroban_resources_write_bytes, LENGTH(FROM_BASE64(tx_envelope)) envelope_size FROM `crypto-stellar.crypto_stellar.history_transactions` WHERE batch_run_date >= DATETIME("2026-07-01") AND batch_run_date < DATETIME("2026-07-08") AND soroban_resources_instructions > 0
+
+wasm_sizes sample query
+DECLARE start_ts TIMESTAMP DEFAULT TIMESTAMP("2026-07-01");
+DECLARE end_ts   TIMESTAMP DEFAULT TIMESTAMP("2026-07-08");
+
+WITH wasm_ops AS (
+  SELECT DISTINCT transaction_hash
+  FROM `crypto-stellar.crypto_stellar_dbt.enriched_history_operations_soroban`
+  WHERE closed_at >= start_ts
+    AND closed_at <  end_ts
+    AND soroban_operation_type = "upload_wasm"
+)
+SELECT
+  t.tx_envelope
+FROM `crypto-stellar.crypto_stellar.history_transactions` AS t
+JOIN wasm_ops USING (transaction_hash)
+WHERE t.closed_at >= start_ts
+  AND t.closed_at <  end_ts
 
 history_contract_events sample query
-SELECT topics_decoded, data_decoded FROM `crypto-stellar.crypto_stellar.history_contract_events` WHERE type = 2 AND TIMESTAMP_TRUNC(closed_at, MONTH) between TIMESTAMP("2024-06-27") AND TIMESTAMP("2024-09-27") AND contains_substr(topics_decoded, "write_entry")
+SELECT
+  topics_decoded, data_decoded
+FROM
+  `crypto-stellar.crypto_stellar.history_contract_events`
+WHERE
+  type = 2 
+  AND closed_at >= TIMESTAMP("2026-07-01")
+  AND closed_at < TIMESTAMP("2026-07-08")
+  AND contains_substr(topics_decoded, "write_entry")
 
 NOTE: this query filters out anything that isn't a write_entry. This is required for the script to work correctly!
 
 classic_transactions sample query
-SELECT LENGTH(FROM_BASE64(tx_envelope)) as envelope_size FROM `crypto-stellar.crypto_stellar.history_transactions` WHERE batch_run_date BETWEEN DATETIME("2025-09-09") AND DATETIME("2025-09-09") AND soroban_resources_instructions = 0
+SELECT
+    LENGTH(FROM_BASE64(tx_envelope)) as envelope_size
+FROM `crypto-stellar.crypto_stellar.history_transactions`
+WHERE
+    batch_run_date >= DATETIME("2026-07-01") AND batch_run_date < DATETIME("2026-07-08")
+    AND soroban_resources_instructions = 0
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "history_transactions", type=str, help="history_transactions csv file"
     )
+    parser.add_argument("wasm_sizes", type=str, help="wasm_sizes csv file")
     parser.add_argument(
         "history_contract_events", type=str, help="history_contract events csv file."
     )
@@ -283,15 +291,18 @@ SELECT LENGTH(FROM_BASE64(tx_envelope)) as envelope_size FROM `crypto-stellar.cr
     print("Processing data. This might take a few minutes...")
 
     process_soroban_history(
-        args.history_transactions, args.workers, args.max_bins, args.max_output_bins
+        args.history_transactions, args.max_bins, args.max_output_bins
+    )
+    process_wasm_sizes(
+        args.wasm_sizes, args.workers, args.max_bins, args.max_output_bins
     )
     print()
     process_soroban_events(
-        args.history_contract_events, args.workers, args.max_bins, args.max_output_bins
+        args.history_contract_events, args.max_bins, args.max_output_bins
     )
     print()
     process_classic_transactions(
-        args.classic_transactions, args.workers, args.max_bins, args.max_output_bins
+        args.classic_transactions, args.max_bins, args.max_output_bins
     )
 
 
