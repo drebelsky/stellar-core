@@ -758,10 +758,11 @@ class BucketEntryIterator
 };
 } // namespace
 
+template <class BucketT>
 void
-SearchableLiveBucketListSnapshot::scanForLiveEntriesOfType(
+SearchableBucketListSnapshot<BucketT>::scanForLiveEntriesOfType(
     LedgerEntryType type,
-    std::function<void(LedgerEntry const&, LedgerKey const&)> callback) const
+    std::function<Loop(LedgerEntry const&, LedgerKey const&)> callback) const
 {
     ZoneScoped;
     // We implement this as a k-way merge over all buckets. We use a loser tree
@@ -779,7 +780,7 @@ SearchableLiveBucketListSnapshot::scanForLiveEntriesOfType(
 
     std::vector<BucketEntryIterator> iterators;
     loopAllBuckets(
-        [&iterators, type](std::shared_ptr<LiveBucket const> const& bucket) {
+        [&iterators, type](std::shared_ptr<BucketT const> const& bucket) {
             if (bucket->isEmpty())
             {
                 return Loop::INCOMPLETE;
@@ -880,7 +881,10 @@ SearchableLiveBucketListSnapshot::scanForLiveEntriesOfType(
             auto& entry = iter.getEntry();
             if (entry.type() == LIVEENTRY || entry.type() == INITENTRY)
             {
-                callback(entry.liveEntry(), key);
+                if (callback(entry.liveEntry(), key) == Loop::COMPLETE)
+                {
+                    return;
+                }
             }
         }
         first = false;
@@ -997,6 +1001,7 @@ SearchableLiveBucketListSnapshot::scanForEvictionInBucket(
     XDRInputFileStream stream{};
     stream.open(bucket->getFilename().string());
     stream.seek(iter.bucketFileOffset);
+    // TODO: fix hack where we read hot archive entires as regular...
     BucketEntry be;
 
     // First, scan the bucket region and record all temp entry keys in

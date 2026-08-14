@@ -336,6 +336,13 @@ BucketBase<BucketT, IndexT>::mergeInternal(
     }
 }
 
+template <typename BucketT, typename IndexT>
+std::optional<std::pair<std::streamoff, std::streamoff>>
+BucketBase<BucketT, IndexT>::getRangeForType(LedgerEntryType type) const
+{
+    return getIndex().getRangeForType(type);
+}
+
 template <class BucketT, class IndexT>
 std::shared_ptr<BucketT>
 BucketBase<BucketT, IndexT>::merge(

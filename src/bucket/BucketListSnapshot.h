@@ -201,6 +201,13 @@ template <class BucketT> class SearchableBucketListSnapshot
     // Access to underlying data (for copying/refreshing)
     std::shared_ptr<BucketListSnapshotData<BucketT> const> const&
     getSnapshotData() const;
+
+    // Iterate over all live entries of a given type. Note that this handles
+    // shadowing and only returns the latest live entry for each key.
+    void scanForLiveEntriesOfType(
+        LedgerEntryType type,
+        std::function<Loop(LedgerEntry const&, LedgerKey const&)> callback)
+        const;
 };
 
 // Live bucket list snapshot with additional query methods
@@ -240,13 +247,6 @@ class SearchableLiveBucketListSnapshot
     void scanForEntriesOfType(
         LedgerEntryType type,
         std::function<Loop(BucketEntry const&)> callback) const;
-
-    // Iterate over all live entries of a given type. Note that this handles
-    // shadowing and only returns the latest live entry for each key.
-    void scanForLiveEntriesOfType(
-        LedgerEntryType type,
-        std::function<void(LedgerEntry const&, LedgerKey const&)> callback)
-        const;
 
     friend class ImmutableLedgerData;
     friend class ImmutableLedgerView;

@@ -71,6 +71,12 @@ HotArchiveBucketIndex::operator==(HotArchiveBucketIndex const& in) const
 }
 #endif
 
+std::optional<std::pair<std::streamoff, std::streamoff>>
+HotArchiveBucketIndex::getRangeForType(LedgerEntryType type) const
+{
+    return mDiskIndex.getRangeForType(type);
+}
+
 template HotArchiveBucketIndex::HotArchiveBucketIndex(
     BucketManager const& bm, cereal::BinaryInputArchive& ar,
     std::streamoff pageSize);

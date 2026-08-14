@@ -1682,6 +1682,7 @@ TEST_CASE("scanForLiveEntriesOfType randomized testing",
 
                     // Each key should only be emitted once
                     REQUIRE(found.emplace(key, entry).second);
+                    return Loop::INCOMPLETE;
                 });
             REQUIRE(found == expected);
         }
@@ -1704,8 +1705,10 @@ TEST_CASE("scanForLiveEntriesOfType randomized testing",
             INFO(
                 "type = " << xdr::xdr_traits<LedgerEntryType>::enum_name(type));
             ledgerView.scanCurrentLiveEntriesOfType(
-                type,
-                [](LedgerEntry const&, LedgerKey const&) { REQUIRE(false); });
+                type, [](LedgerEntry const&, LedgerKey const&) {
+                    REQUIRE(false);
+                    return Loop::COMPLETE;
+                });
         }
     });
 
@@ -1794,6 +1797,7 @@ TEST_CASE("scanForLiveEntriesOfType loser tree unit tests",
 
                     // Each key must be emitted exactly once
                     REQUIRE(found.emplace(key, entry).second);
+                    return Loop::INCOMPLETE;
                 });
             return found;
         };
@@ -1801,8 +1805,10 @@ TEST_CASE("scanForLiveEntriesOfType loser tree unit tests",
         auto requireNoCallback = [](ImmutableLedgerView const& view,
                                     LedgerEntryType type) {
             view.scanCurrentLiveEntriesOfType(
-                type,
-                [](LedgerEntry const&, LedgerKey const&) { REQUIRE(false); });
+                type, [](LedgerEntry const&, LedgerKey const&) {
+                    REQUIRE(false);
+                    return Loop::COMPLETE;
+                });
         };
 
         SECTION("k disjoint buckets")

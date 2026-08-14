@@ -177,7 +177,14 @@ class ImmutableLedgerView : public virtual AbstractLedgerView
     // with the latest live version for each entry.
     void scanCurrentLiveEntriesOfType(
         LedgerEntryType type,
-        std::function<void(LedgerEntry const&, LedgerKey const&)> callback)
+        std::function<Loop(LedgerEntry const&, LedgerKey const&)> callback)
+        const;
+
+    // Scan the hot archive bucket list for entries of a given type. Calls
+    // callback with the latest live version for each entry.
+    void scanCurrentHotArchiveEntriesOfType(
+        LedgerEntryType type,
+        std::function<Loop(LedgerEntry const&, LedgerKey const&)> callback)
         const;
 
     // === Hot Archive BucketList methods ===
@@ -214,6 +221,7 @@ class ApplyLedgerView : private ImmutableLedgerView,
     using ImmutableLedgerView::loadLiveKeys;
     using ImmutableLedgerView::loadPoolShareTrustLinesByAccountAndAsset;
     using ImmutableLedgerView::scanAllArchiveEntries;
+    using ImmutableLedgerView::scanCurrentHotArchiveEntriesOfType;
     using ImmutableLedgerView::scanCurrentLiveEntriesOfType;
     using ImmutableLedgerView::scanForEviction;
     using ImmutableLedgerView::scanLiveEntriesOfType;

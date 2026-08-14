@@ -202,6 +202,14 @@ class BucketBase : public NonMovableOrCopyable
 
 #endif // BUILD_TESTS
 
+    // Returns [lowerBound, upperBound) of file offsets for all entries of the
+    // given type in the bucket, or std::nullopt if no entries of this type
+    // exist. Note that if the underlying index is a page based index, this is a
+    // rough bound such that entries of another type may also be present in the
+    // range.
+    std::optional<std::pair<std::streamoff, std::streamoff>>
+    getRangeForType(LedgerEntryType type) const;
+
     template <class T> friend class SearchableBucketListSnapshot;
 };
 }

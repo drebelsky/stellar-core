@@ -117,5 +117,8 @@ class HotArchiveBucketIndex : public NonMovableOrCopyable
 #ifdef BUILD_TESTS
     bool operator==(HotArchiveBucketIndex const& in) const;
 #endif
+
+    std::optional<std::pair<std::streamoff, std::streamoff>>
+    getRangeForType(LedgerEntryType type) const;
 };
 }
